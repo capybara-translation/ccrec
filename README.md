@@ -143,6 +143,10 @@ Replace `/path/to/ccrec` with the actual path to the binary and adjust the `-dir
 go test ./...
 ```
 
+## Acknowledgments
+
+Inspired by [cclog](https://github.com/annenpolka/cclog). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for license details.
+
 ## License
 
 [MIT](LICENSE)
