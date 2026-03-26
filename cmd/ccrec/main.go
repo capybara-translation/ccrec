@@ -8,10 +8,20 @@ import (
 	"strings"
 
 	"github.com/capybara-translation/ccrec/internal/formatter"
+	"github.com/capybara-translation/ccrec/internal/hook"
 	"github.com/capybara-translation/ccrec/internal/parser"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		hook.Run(os.Args[2:])
+		return
+	}
+
+	runConvert()
+}
+
+func runConvert() {
 	var (
 		output         string
 		includeToolUse bool
@@ -22,15 +32,18 @@ func main() {
 	flag.BoolVar(&includeToolUse, "tools", false, "Include tool use summaries")
 	flag.BoolVar(&includeAll, "all", false, "Disable filtering (include all messages)")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: ccrec [options] <transcript.jsonl>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: ccrec [options] <transcript.jsonl>\n")
+		fmt.Fprintf(os.Stderr, "       ccrec hook [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Convert Claude Code conversation transcripts (JSONL) to Markdown.\n\n")
+		fmt.Fprintf(os.Stderr, "Commands:\n")
+		fmt.Fprintf(os.Stderr, "  hook    Run as a Claude Code Stop hook (reads stdin)\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  ccrec session.jsonl                    # Output to stdout\n")
 		fmt.Fprintf(os.Stderr, "  ccrec -o out.md session.jsonl          # Output to file\n")
 		fmt.Fprintf(os.Stderr, "  ccrec -tools session.jsonl             # Include tool summaries\n")
-		fmt.Fprintf(os.Stderr, "  ccrec -all session.jsonl               # Include all messages\n")
+		fmt.Fprintf(os.Stderr, "  ccrec hook -dir ~/obsidian/projects    # Run as Stop hook\n")
 	}
 
 	flag.Parse()
