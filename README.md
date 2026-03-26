@@ -89,7 +89,7 @@ ccrec hook -dir <output-directory>
 
 The `hook` subcommand:
 
-1. Reads the Stop hook JSON from stdin (`transcript_path`, `session_id`, etc.)
+1. Reads the Stop/SessionEnd hook JSON from stdin (`transcript_path`, `session_id`, etc.)
 2. Derives the project name from the transcript path
 3. Converts the transcript to Markdown
 4. Saves it as `<output-directory>/<project-name>.md`, overwriting on each update
@@ -110,6 +110,16 @@ Add the following to your Claude Code settings (`~/.claude/settings.json`):
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/ccrec hook -dir ~/Documents/obsidian/vault/projects"
+          }
+        ]
+      }
     ]
   }
 }
@@ -119,10 +129,13 @@ Replace `/path/to/ccrec` with the actual path to the binary and adjust the `-dir
 
 ### Behavior
 
+- Saves to `<output-directory>/<project-name>/<date>_<session-id>.md`
+- Date is derived from the first message timestamp (stable across midnight)
+- Session ID is the first 8 characters of the transcript filename
+- Overwrites the same file on every invocation within a session
 - Skips subagent transcripts (only saves the main conversation)
 - Skips execution when `stop_hook_active` is true (prevents infinite loops)
 - Creates the output directory if it doesn't exist
-- Overwrites the output file on every invocation to keep it up to date
 
 ## Testing
 
