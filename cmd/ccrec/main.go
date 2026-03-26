@@ -12,10 +12,18 @@ import (
 	"github.com/capybara-translation/ccrec/internal/parser"
 )
 
+var version = "dev"
+
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "hook" {
-		hook.Run(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "hook":
+			hook.Run(os.Args[2:])
+			return
+		case "-version", "--version":
+			fmt.Println("ccrec " + version)
+			return
+		}
 	}
 
 	runConvert()
