@@ -1,0 +1,101 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/capybara-translation/ccrec/internal/formatter"
+	"github.com/capybara-translation/ccrec/internal/parser"
+)
+
+func main() {
+	var (
+		output         string
+		includeToolUse bool
+		includeAll     bool
+	)
+
+	flag.StringVar(&output, "o", "", "Output file path (default: stdout)")
+	flag.BoolVar(&includeToolUse, "tools", false, "Include tool use summaries")
+	flag.BoolVar(&includeAll, "all", false, "Disable filtering (include all messages)")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: ccrec [options] <transcript.jsonl>\n\n")
+		fmt.Fprintf(os.Stderr, "Convert Claude Code conversation transcripts (JSONL) to Markdown.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  ccrec session.jsonl                    # Output to stdout\n")
+		fmt.Fprintf(os.Stderr, "  ccrec -o out.md session.jsonl          # Output to file\n")
+		fmt.Fprintf(os.Stderr, "  ccrec -tools session.jsonl             # Include tool summaries\n")
+		fmt.Fprintf(os.Stderr, "  ccrec -all session.jsonl               # Include all messages\n")
+	}
+
+	flag.Parse()
+
+	if flag.NArg() < 1 {
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	inputPath := flag.Arg(0)
+
+	// Parse JSONL.
+	records, err := parser.ParseFile(inputPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(records) == 0 {
+		fmt.Fprintf(os.Stderr, "warning: no records found in %s\n", inputPath)
+		os.Exit(0)
+	}
+
+	// Determine output destination.
+	var w *os.File
+	if output == "" {
+		w = os.Stdout
+	} else {
+		dir := filepath.Dir(output)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "error: create directory %s: %v\n", dir, err)
+			os.Exit(1)
+		}
+		w, err = os.Create(output)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: create output file: %v\n", err)
+			os.Exit(1)
+		}
+		defer w.Close()
+	}
+
+	// Format as Markdown.
+	opts := formatter.Options{
+		IncludeToolUse: includeToolUse,
+		IncludeAll:     includeAll,
+		SourcePath:     absOrOriginal(inputPath),
+	}
+
+	if err := formatter.FormatMarkdown(w, records, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "error: format markdown: %v\n", err)
+		os.Exit(1)
+	}
+
+	if output != "" {
+		fmt.Fprintf(os.Stderr, "wrote %s\n", output)
+	}
+}
+
+func absOrOriginal(path string) string {
+	if strings.HasPrefix(path, "/") {
+		return path
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
+}

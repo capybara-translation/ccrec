@@ -1,0 +1,110 @@
+package parser
+
+import (
+	"encoding/json"
+	"strings"
+)
+
+// ExtractText extracts human-readable text from a message's content field.
+// content can be either a plain string or an array of ContentBlock objects.
+// It skips thinking blocks and tool_use/tool_result blocks by default.
+func ExtractText(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+
+	// Try as a plain string first.
+	var s string
+	if err := json.Unmarshal(content, &s); err == nil {
+		return s
+	}
+
+	// Try as an array of content blocks.
+	var blocks []ContentBlock
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		// If it's neither string nor array, return empty.
+		return ""
+	}
+
+	var parts []string
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			if t := strings.TrimSpace(b.Text); t != "" {
+				parts = append(parts, t)
+			}
+		// Skip: thinking, tool_use, tool_result
+		}
+	}
+
+	return strings.Join(parts, "\n\n")
+}
+
+// ExtractTextWithToolUse extracts text and includes tool use summaries.
+func ExtractTextWithToolUse(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+
+	var s string
+	if err := json.Unmarshal(content, &s); err == nil {
+		return s
+	}
+
+	var blocks []ContentBlock
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return ""
+	}
+
+	var parts []string
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			if t := strings.TrimSpace(b.Text); t != "" {
+				parts = append(parts, t)
+			}
+		case "tool_use":
+			parts = append(parts, formatToolUse(b))
+		case "tool_result":
+			// Tool results are in user messages; skip for brevity.
+		// Skip: thinking
+		}
+	}
+
+	return strings.Join(parts, "\n\n")
+}
+
+func formatToolUse(b ContentBlock) string {
+	if b.Name == "" {
+		return ""
+	}
+
+	summary := "*[Tool: " + b.Name
+	// Extract a brief hint from input if possible.
+	if len(b.Input) > 0 {
+		var input map[string]json.RawMessage
+		if err := json.Unmarshal(b.Input, &input); err == nil {
+			if cmd, ok := input["command"]; ok {
+				var c string
+				if json.Unmarshal(cmd, &c) == nil {
+					if len(c) > 80 {
+						c = c[:80] + "..."
+					}
+					summary += ": `" + c + "`"
+				}
+			} else if fp, ok := input["file_path"]; ok {
+				var p string
+				if json.Unmarshal(fp, &p) == nil {
+					summary += ": " + p
+				}
+			} else if pat, ok := input["pattern"]; ok {
+				var p string
+				if json.Unmarshal(pat, &p) == nil {
+					summary += ": `" + p + "`"
+				}
+			}
+		}
+	}
+	summary += "]*"
+	return summary
+}
