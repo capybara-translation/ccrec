@@ -63,10 +63,15 @@ func Run(args []string) {
 		return
 	}
 
-	// Derive project name from transcript path.
-	projectName := ExtractProjectName(input.TranscriptPath)
+	// Derive project name from cwd, falling back to transcript path.
+	var projectName string
+	if input.CWD != "" {
+		projectName = filepath.Base(input.CWD)
+	} else {
+		projectName = ExtractProjectName(input.TranscriptPath)
+	}
 	if projectName == "" {
-		fmt.Fprintf(os.Stderr, "ccrec hook: could not determine project name from %s\n", input.TranscriptPath)
+		fmt.Fprintf(os.Stderr, "ccrec hook: could not determine project name from cwd=%q transcript=%q\n", input.CWD, input.TranscriptPath)
 		os.Exit(1)
 	}
 
