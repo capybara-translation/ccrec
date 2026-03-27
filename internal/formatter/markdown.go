@@ -32,7 +32,7 @@ func FormatMarkdown(w io.Writer, records []*parser.Record, opts Options) error {
 
 	// Filter unless --include-all.
 	if !opts.IncludeAll {
-		sorted = FilterRecords(sorted)
+		sorted = FilterRecords(sorted, opts.IncludeToolUse)
 	}
 
 	// Header.

@@ -24,7 +24,7 @@ func TestFilterRecords_KeepsUserAndAssistant(t *testing.T) {
 		makeRecord("user", "user", "hello"),
 		makeRecord("assistant", "assistant", "hi there"),
 	}
-	filtered := FilterRecords(records)
+	filtered := FilterRecords(records, false)
 	if len(filtered) != 2 {
 		t.Fatalf("got %d, want 2", len(filtered))
 	}
@@ -38,7 +38,7 @@ func TestFilterRecords_ExcludesNonMessageTypes(t *testing.T) {
 		makeRecord("system", "", "some system info"),
 		makeRecord("summary", "", "summary text"),
 	}
-	filtered := FilterRecords(records)
+	filtered := FilterRecords(records, false)
 	if len(filtered) != 1 {
 		t.Fatalf("got %d, want 1 (only user message)", len(filtered))
 	}
@@ -49,7 +49,7 @@ func TestFilterRecords_ExcludesEmptyContent(t *testing.T) {
 		makeRecord("assistant", "assistant", ""),
 		makeRecord("assistant", "assistant", "   "),
 	}
-	filtered := FilterRecords(records)
+	filtered := FilterRecords(records, false)
 	if len(filtered) != 0 {
 		t.Fatalf("got %d, want 0", len(filtered))
 	}
@@ -58,7 +58,7 @@ func TestFilterRecords_ExcludesEmptyContent(t *testing.T) {
 func TestFilterRecords_ExcludesMetaMessages(t *testing.T) {
 	rec := makeRecord("user", "user", "meta message")
 	rec.IsMeta = true
-	filtered := FilterRecords([]*parser.Record{rec})
+	filtered := FilterRecords([]*parser.Record{rec}, false)
 	if len(filtered) != 0 {
 		t.Fatalf("got %d, want 0", len(filtered))
 	}
@@ -66,7 +66,7 @@ func TestFilterRecords_ExcludesMetaMessages(t *testing.T) {
 
 func TestFilterRecords_ExcludesNilMessage(t *testing.T) {
 	rec := &parser.Record{Type: "user", Timestamp: time.Now()}
-	filtered := FilterRecords([]*parser.Record{rec})
+	filtered := FilterRecords([]*parser.Record{rec}, false)
 	if len(filtered) != 0 {
 		t.Fatalf("got %d, want 0", len(filtered))
 	}
@@ -86,9 +86,32 @@ func TestFilterRecords_ExcludesPatterns(t *testing.T) {
 
 	for _, tt := range tests {
 		rec := makeRecord("assistant", "assistant", tt.content)
-		filtered := FilterRecords([]*parser.Record{rec})
+		filtered := FilterRecords([]*parser.Record{rec}, false)
 		if len(filtered) != 0 {
 			t.Errorf("content %q should be excluded, but was included", tt.content)
 		}
+	}
+}
+
+func TestFilterRecords_IncludesToolUseOnlyMessages(t *testing.T) {
+	rec := &parser.Record{
+		Type:      "assistant",
+		Timestamp: time.Now(),
+		Message: &parser.Message{
+			Role:    "assistant",
+			Content: json.RawMessage(`[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/test.go"}}]`),
+		},
+	}
+
+	// Without includeToolUse: should be excluded (text is empty).
+	filtered := FilterRecords([]*parser.Record{rec}, false)
+	if len(filtered) != 0 {
+		t.Fatalf("tool-only message should be excluded without includeToolUse, got %d", len(filtered))
+	}
+
+	// With includeToolUse: should be included.
+	filtered = FilterRecords([]*parser.Record{rec}, true)
+	if len(filtered) != 1 {
+		t.Fatalf("tool-only message should be included with includeToolUse, got %d", len(filtered))
 	}
 }

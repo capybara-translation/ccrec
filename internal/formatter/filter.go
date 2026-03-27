@@ -17,11 +17,11 @@ var excludedPatterns = []string{
 }
 
 // FilterRecords returns only records that contain meaningful conversation content.
-func FilterRecords(records []*parser.Record) []*parser.Record {
+func FilterRecords(records []*parser.Record, includeToolUse bool) []*parser.Record {
 	var filtered []*parser.Record
 
 	for _, rec := range records {
-		if shouldInclude(rec) {
+		if shouldInclude(rec, includeToolUse) {
 			filtered = append(filtered, rec)
 		}
 	}
@@ -29,7 +29,7 @@ func FilterRecords(records []*parser.Record) []*parser.Record {
 	return filtered
 }
 
-func shouldInclude(rec *parser.Record) bool {
+func shouldInclude(rec *parser.Record, includeToolUse bool) bool {
 	// Only include user and assistant messages.
 	switch rec.Type {
 	case "user", "assistant":
@@ -46,7 +46,12 @@ func shouldInclude(rec *parser.Record) bool {
 		return false
 	}
 
-	text := parser.ExtractText(rec.Message.Content)
+	var text string
+	if includeToolUse {
+		text = parser.ExtractTextWithToolUse(rec.Message.Content)
+	} else {
+		text = parser.ExtractText(rec.Message.Content)
+	}
 	if strings.TrimSpace(text) == "" {
 		return false
 	}

@@ -24,6 +24,7 @@ type StopHookInput struct {
 func Run(args []string) {
 	fs := flag.NewFlagSet("hook", flag.ExitOnError)
 	dir := fs.String("dir", "", "Output directory (required)")
+	tools := fs.Bool("tools", false, "Include tool use summaries")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: ccrec hook -dir <output-directory>\n\n")
 		fmt.Fprintf(os.Stderr, "Run as a Claude Code Stop hook. Reads hook JSON from stdin,\n")
@@ -113,7 +114,8 @@ func Run(args []string) {
 	defer f.Close()
 
 	opts := formatter.Options{
-		SourcePath: input.TranscriptPath,
+		SourcePath:     input.TranscriptPath,
+		IncludeToolUse: *tools,
 	}
 	if err := formatter.FormatMarkdown(f, records, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "ccrec hook: format error: %v\n", err)
