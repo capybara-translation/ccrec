@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/capybara-translation/ccrec/internal/formatter"
@@ -13,6 +14,15 @@ import (
 )
 
 var version = "dev"
+
+func init() {
+	if version != "dev" {
+		return // ldflags で設定済み（GoReleaser）
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		version = info.Main.Version
+	}
+}
 
 func main() {
 	if len(os.Args) > 1 {
