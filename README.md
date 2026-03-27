@@ -93,7 +93,7 @@ entities (nodes) and relationships (edges)...
 
 ## Claude Code Hook Integration
 
-ccrec can run as a [Claude Code Stop hook](https://docs.anthropic.com/en/docs/claude-code/hooks) to automatically save conversations to a directory (e.g., an Obsidian vault) after every response.
+ccrec can run as a [Claude Code hook](https://docs.anthropic.com/en/docs/claude-code/hooks) to automatically save conversations to a directory (e.g., an Obsidian vault) after every response.
 
 ```bash
 ccrec hook -dir <output-directory>
@@ -101,7 +101,7 @@ ccrec hook -dir <output-directory>
 
 The `hook` subcommand:
 
-1. Reads the Stop/SessionEnd hook JSON from stdin (`transcript_path`, `session_id`, etc.)
+1. Reads the hook JSON from stdin (`transcript_path`, `session_id`, etc.)
 2. Derives the project name from the transcript path
 3. Converts the transcript to Markdown
 4. Saves it as `<output-directory>/<project-name>.md`, overwriting on each update
