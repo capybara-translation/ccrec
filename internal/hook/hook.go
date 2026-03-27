@@ -91,7 +91,7 @@ func Run(args []string) {
 	sessionDate := "unknown"
 	for _, rec := range records {
 		if !rec.Timestamp.IsZero() {
-			sessionDate = rec.Timestamp.Format("2006-01-02")
+			sessionDate = rec.Timestamp.Local().Format("2006-01-02")
 			break
 		}
 	}

@@ -77,7 +77,7 @@ func writeMessage(w io.Writer, rec *parser.Record, opts Options) error {
 	fmt.Fprintf(w, "## %s\n\n", role)
 
 	// Timestamp.
-	fmt.Fprintf(w, "**Time:** %s\n\n", rec.Timestamp.Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(w, "**Time:** %s\n\n", rec.Timestamp.Local().Format("2006-01-02 15:04:05"))
 
 	// Content with HTML safety.
 	safeText := escapeHTMLInMarkdown(text)

@@ -43,10 +43,10 @@ func TestFormatMarkdown_BasicOutput(t *testing.T) {
 		"# Conversation Log",
 		"**Messages:** 2",
 		"## User",
-		"**Time:** 2026-01-15 10:30:00",
+		"**Time:** " + ts.Local().Format("2006-01-02 15:04:05"),
 		"What is Go?",
 		"## Assistant",
-		"**Time:** 2026-01-15 10:30:05",
+		"**Time:** " + ts.Add(5*time.Second).Local().Format("2006-01-02 15:04:05"),
 		"Go is a programming language.",
 	}
 	for _, want := range checks {
