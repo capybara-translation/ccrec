@@ -44,11 +44,13 @@ func runConvert() {
 		output         string
 		includeToolUse bool
 		includeAll     bool
+		includeImages  bool
 	)
 
 	flag.StringVar(&output, "o", "", "Output file path (default: stdout)")
 	flag.BoolVar(&includeToolUse, "tools", false, "Include tool use summaries")
 	flag.BoolVar(&includeAll, "all", false, "Disable filtering (include all messages)")
+	flag.BoolVar(&includeImages, "images", false, "Extract and embed images (requires -o)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: ccrec [options] <transcript.jsonl>\n")
 		fmt.Fprintf(os.Stderr, "       ccrec hook [options]\n\n")
@@ -104,9 +106,20 @@ func runConvert() {
 	}
 
 	// Format as Markdown.
+	var attachmentsDir string
+	if includeImages && output != "" {
+		base := strings.TrimSuffix(filepath.Base(output), filepath.Ext(output))
+		attachmentsDir = filepath.Join(filepath.Dir(output), "attachments_"+base)
+	} else if includeImages {
+		fmt.Fprintf(os.Stderr, "warning: -images requires -o to save image files, ignoring\n")
+		includeImages = false
+	}
+
 	opts := formatter.Options{
 		IncludeToolUse: includeToolUse,
 		IncludeAll:     includeAll,
+		IncludeImages:  includeImages,
+		AttachmentsDir: attachmentsDir,
 		SourcePath:     absOrOriginal(inputPath),
 	}
 

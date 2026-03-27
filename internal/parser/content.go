@@ -74,6 +74,26 @@ func ExtractTextWithToolUse(content json.RawMessage) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// ExtractImages extracts image blocks from a message's content field.
+func ExtractImages(content json.RawMessage) []ImageSource {
+	if len(content) == 0 {
+		return nil
+	}
+
+	var blocks []ContentBlock
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return nil
+	}
+
+	var images []ImageSource
+	for _, b := range blocks {
+		if b.Type == "image" && b.Source != nil && b.Source.Data != "" {
+			images = append(images, *b.Source)
+		}
+	}
+	return images
+}
+
 func formatToolUse(b ContentBlock) string {
 	if b.Name == "" {
 		return ""

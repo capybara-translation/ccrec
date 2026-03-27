@@ -43,4 +43,12 @@ type ContentBlock struct {
 	Content   json.RawMessage `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Source    *ImageSource    `json:"source,omitempty"`
+}
+
+// ImageSource represents the source of an image content block.
+type ImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
