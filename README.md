@@ -11,7 +11,7 @@ A CLI tool that converts [Claude Code](https://docs.anthropic.com/en/docs/claude
 
 ## Installation
 
-Requires Go 1.21+.
+Requires Go 1.25+.
 
 ```bash
 go install github.com/capybara-translation/ccrec/cmd/ccrec@latest
