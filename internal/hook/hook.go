@@ -12,8 +12,8 @@ import (
 	"github.com/capybara-translation/ccrec/internal/parser"
 )
 
-// StopHookInput represents the JSON passed via stdin from Claude Code's Stop hook.
-type StopHookInput struct {
+// HookInput represents the JSON passed via stdin from Claude Code hooks.
+type HookInput struct {
 	SessionID      string `json:"session_id"`
 	TranscriptPath string `json:"transcript_path"`
 	StopHookActive bool   `json:"stop_hook_active"`
@@ -29,7 +29,7 @@ func Run(args []string) {
 	images := fs.Bool("images", false, "Extract and embed images")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: ccrec hook -dir <output-directory>\n\n")
-		fmt.Fprintf(os.Stderr, "Run as a Claude Code Stop hook. Reads hook JSON from stdin,\n")
+		fmt.Fprintf(os.Stderr, "Run as a Claude Code hook. Reads hook JSON from stdin,\n")
 		fmt.Fprintf(os.Stderr, "converts the transcript to Markdown, and saves to the output directory.\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fs.PrintDefaults()
@@ -45,7 +45,7 @@ func Run(args []string) {
 	outDir := expandHome(*dir)
 
 	// Read stdin JSON.
-	var input StopHookInput
+	var input HookInput
 	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
 		fmt.Fprintf(os.Stderr, "ccrec hook: failed to read stdin: %v\n", err)
 		os.Exit(1)

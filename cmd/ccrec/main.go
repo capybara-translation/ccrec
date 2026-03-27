@@ -60,10 +60,13 @@ func runConvert() {
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  ccrec session.jsonl                    # Output to stdout\n")
-		fmt.Fprintf(os.Stderr, "  ccrec -o out.md session.jsonl          # Output to file\n")
-		fmt.Fprintf(os.Stderr, "  ccrec -tools session.jsonl             # Include tool summaries\n")
-		fmt.Fprintf(os.Stderr, "  ccrec hook -dir ~/obsidian/projects    # Run as Stop hook\n")
+		fmt.Fprintf(os.Stderr, "  ccrec session.jsonl                          # Output to stdout\n")
+		fmt.Fprintf(os.Stderr, "  ccrec -o out.md session.jsonl                # Output to file\n")
+		fmt.Fprintf(os.Stderr, "  ccrec -tools session.jsonl                   # Include tool summaries\n")
+		fmt.Fprintf(os.Stderr, "  ccrec -all session.jsonl                     # Include all messages\n")
+		fmt.Fprintf(os.Stderr, "  ccrec -images -o out.md session.jsonl        # Extract images\n")
+		fmt.Fprintf(os.Stderr, "\n  ccrec hook -dir ~/obsidian/projects          # Run as Claude Code hook\n")
+		fmt.Fprintf(os.Stderr, "  ccrec hook -images -dir ~/obsidian/projects  # With image extraction\n")
 	}
 
 	flag.Parse()
