@@ -11,13 +11,21 @@ A CLI tool that converts [Claude Code](https://docs.anthropic.com/en/docs/claude
 
 ## Installation
 
+### Homebrew (macOS)
+
+```bash
+brew install capybara-translation/tap/ccrec
+```
+
+### go install
+
 Requires Go 1.25+.
 
 ```bash
 go install github.com/capybara-translation/ccrec/cmd/ccrec@latest
 ```
 
-Or build from source:
+### Build from source
 
 ```bash
 git clone https://github.com/capybara-translation/ccrec.git
@@ -39,6 +47,9 @@ ccrec -tools session.jsonl
 
 # Disable filtering (include all messages)
 ccrec -all session.jsonl
+
+# Extract and embed images (requires -o)
+ccrec -images -o output.md session.jsonl
 ```
 
 ### Where are the transcript files?
@@ -76,8 +87,9 @@ entities (nodes) and relationships (edges)...
 | Flag | Description |
 |------|-------------|
 | `-o <path>` | Write output to a file instead of stdout |
-| `-tools` | Include tool use summaries in the output |
-| `-all` | Disable filtering; include all messages |
+| `-tools`    | Include tool use summaries in the output |
+| `-all`      | Disable filtering; include all messages  |
+| `-images`   | Extract and embed images (requires `-o`)  |
 
 ## Claude Code Hook Integration
 
@@ -106,7 +118,7 @@ Add the following to your Claude Code settings (`~/.claude/settings.json`):
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/ccrec hook -dir ~/Documents/obsidian/vault/projects"
+            "command": "/path/to/ccrec hook -images -dir ~/Documents/obsidian/vault/projects"
           }
         ]
       }
@@ -116,7 +128,7 @@ Add the following to your Claude Code settings (`~/.claude/settings.json`):
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/ccrec hook -dir ~/Documents/obsidian/vault/projects"
+            "command": "/path/to/ccrec hook -images -dir ~/Documents/obsidian/vault/projects"
           }
         ]
       }
