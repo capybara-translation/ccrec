@@ -21,5 +21,20 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+brews:
+  - repository:
+      owner: capybara-translation
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/capybara-translation/ccrec"
+    description: "Convert Claude Code conversation transcripts to Markdown"
+    license: "MIT"
+    install: |
+      bin.install "ccrec"
+    test: |
+      system "#{bin}/ccrec", "--version"
+
 changelog:
   sort: asc
