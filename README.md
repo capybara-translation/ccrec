@@ -8,6 +8,8 @@ A CLI tool that converts [Claude Code](https://docs.anthropic.com/en/docs/claude
 - **Smart filtering** — Strips system messages, metadata, API errors, interrupted requests, and empty messages by default.
 - **HTML-safe output** — Escapes HTML tags outside fenced code blocks, preventing Markdown renderers from misinterpreting raw HTML in conversation content.
 - **Tool use summaries** — Optionally includes concise summaries of tool calls (file paths, commands, grep patterns).
+- **Image extraction** — Optionally decodes and saves base64-encoded images from transcripts.
+- **Claude Code hook integration** — Runs as a Stop/SessionEnd hook to automatically save conversations to a directory (e.g., an Obsidian vault).
 
 ## Installation
 
