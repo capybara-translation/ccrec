@@ -50,6 +50,83 @@ func TestExtractProjectName(t *testing.T) {
 	}
 }
 
+func TestDeriveProjectName(t *testing.T) {
+	tests := []struct {
+		name           string
+		cwd            string
+		basePath       string
+		transcriptPath string
+		want           string
+	}{
+		{
+			name:           "base strips prefix from cwd",
+			cwd:            "/Users/junya/repos/my-app1/backend",
+			basePath:       "/Users/junya/repos",
+			transcriptPath: "",
+			want:           "my-app1/backend",
+		},
+		{
+			name:           "base strips single level",
+			cwd:            "/Users/junya/repos/my-app1",
+			basePath:       "/Users/junya/repos",
+			transcriptPath: "",
+			want:           "my-app1",
+		},
+		{
+			name:           "cwd not under base falls back to Base",
+			cwd:            "/other/path/project",
+			basePath:       "/Users/junya/repos",
+			transcriptPath: "",
+			want:           "project",
+		},
+		{
+			name:           "cwd equals base falls back to Base",
+			cwd:            "/Users/junya/repos",
+			basePath:       "/Users/junya/repos",
+			transcriptPath: "",
+			want:           "repos",
+		},
+		{
+			name:           "no base uses filepath.Base",
+			cwd:            "/Users/junya/repos/myproject",
+			basePath:       "",
+			transcriptPath: "",
+			want:           "myproject",
+		},
+		{
+			name:           "no cwd falls back to transcript",
+			cwd:            "",
+			basePath:       "",
+			transcriptPath: "/Users/junya/.claude/projects/-Users-junya-repos-ccrec/abc123.jsonl",
+			want:           "ccrec",
+		},
+		{
+			name:           "trailing slashes on both paths",
+			cwd:            "/Users/junya/repos/my-app1/backend/",
+			basePath:       "/Users/junya/repos/",
+			transcriptPath: "",
+			want:           "my-app1/backend",
+		},
+		{
+			name:           "base set but cwd empty falls back to transcript",
+			cwd:            "",
+			basePath:       "/Users/junya/repos",
+			transcriptPath: "/Users/junya/.claude/projects/-Users-junya-repos-ccrec/abc123.jsonl",
+			want:           "ccrec",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deriveProjectName(tt.cwd, tt.basePath, tt.transcriptPath)
+			if got != tt.want {
+				t.Errorf("deriveProjectName(%q, %q, %q) = %q, want %q",
+					tt.cwd, tt.basePath, tt.transcriptPath, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractSessionID(t *testing.T) {
 	tests := []struct {
 		name string
@@ -91,6 +168,11 @@ func TestExpandHome(t *testing.T) {
 
 	got = expandHome("~/Documents")
 	if got == "~/Documents" {
-		t.Error("~ should be expanded")
+		t.Error("~/Documents should be expanded")
+	}
+
+	got = expandHome("~")
+	if got == "~" {
+		t.Error("bare ~ should be expanded")
 	}
 }

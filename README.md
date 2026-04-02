@@ -99,14 +99,17 @@ ccrec can run as a [Claude Code hook](https://docs.anthropic.com/en/docs/claude-
 
 ```bash
 ccrec hook -dir <output-directory>
+ccrec hook -base ~/repos -dir <output-directory>
 ```
 
 The `hook` subcommand:
 
 1. Reads the hook JSON from stdin (`transcript_path`, `session_id`, etc.)
-2. Derives the project name from the transcript path
+2. Derives the project name from the working directory (see below)
 3. Converts the transcript to Markdown
-4. Saves it as `<output-directory>/<project-name>.md`, overwriting on each update
+4. Saves it as `<output-directory>/<project-name>/<date>_<session-id>.md`
+
+With `-base`, the project name is the relative path from the base to the working directory. For example, if cwd is `~/repos/my-app/backend` and base is `~/repos`, the project name becomes `my-app/backend`. Without `-base`, only the directory basename is used (e.g., `backend`).
 
 ### Setup
 
@@ -120,7 +123,7 @@ Add the following to your Claude Code settings (`~/.claude/settings.json`):
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/ccrec hook -images -dir ~/Documents/obsidian/vault/projects"
+            "command": "/path/to/ccrec hook -images -base ~/repos -dir ~/Documents/obsidian/vault/projects"
           }
         ]
       }
@@ -130,7 +133,7 @@ Add the following to your Claude Code settings (`~/.claude/settings.json`):
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/ccrec hook -images -dir ~/Documents/obsidian/vault/projects"
+            "command": "/path/to/ccrec hook -images -base ~/repos -dir ~/Documents/obsidian/vault/projects"
           }
         ]
       }
@@ -144,6 +147,8 @@ Replace `/path/to/ccrec` with the actual path to the binary and adjust the `-dir
 ### Behavior
 
 - Saves to `<output-directory>/<project-name>/<date>_<session-id>.md`
+- With `-base`, project name is the relative path from base to cwd (e.g., `my-app/backend`)
+- Without `-base`, project name is the cwd basename (e.g., `backend`)
 - Date is derived from the first message timestamp (stable across midnight)
 - Session ID is the first 8 characters of the transcript filename
 - Overwrites the same file on every invocation within a session

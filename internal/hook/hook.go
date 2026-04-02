@@ -24,11 +24,12 @@ type HookInput struct {
 func Run(args []string) {
 	fs := flag.NewFlagSet("hook", flag.ExitOnError)
 	dir := fs.String("dir", "", "Output directory (required)")
+	base := fs.String("base", "", "Base path to strip from cwd for project name (e.g., ~/repos)")
 	tools := fs.Bool("tools", false, "Include tool use summaries")
 	all := fs.Bool("all", false, "Disable filtering (include all messages)")
 	images := fs.Bool("images", false, "Extract and embed images")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: ccrec hook -dir <output-directory>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: ccrec hook [-base <base-path>] -dir <output-directory>\n\n")
 		fmt.Fprintf(os.Stderr, "Run as a Claude Code hook. Reads hook JSON from stdin,\n")
 		fmt.Fprintf(os.Stderr, "converts the transcript to Markdown, and saves to the output directory.\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
@@ -67,12 +68,11 @@ func Run(args []string) {
 	}
 
 	// Derive project name from cwd, falling back to transcript path.
-	var projectName string
-	if input.CWD != "" {
-		projectName = filepath.Base(input.CWD)
-	} else {
-		projectName = ExtractProjectName(input.TranscriptPath)
+	basePath := ""
+	if *base != "" {
+		basePath = expandHome(*base)
 	}
+	projectName := deriveProjectName(input.CWD, basePath, input.TranscriptPath)
 	if projectName == "" {
 		fmt.Fprintf(os.Stderr, "ccrec hook: could not determine project name from cwd=%q transcript=%q\n", input.CWD, input.TranscriptPath)
 		os.Exit(1)
@@ -129,6 +129,22 @@ func Run(args []string) {
 	}
 }
 
+// deriveProjectName determines the project name from cwd, an optional base path, and the transcript path.
+// When basePath is set and cwd is under it, the relative path is used (e.g., "my-app1/backend").
+// Otherwise it falls back to filepath.Base(cwd), then to ExtractProjectName from the transcript path.
+func deriveProjectName(cwd, basePath, transcriptPath string) string {
+	if cwd != "" {
+		if basePath != "" {
+			rel, err := filepath.Rel(basePath, cwd)
+			if err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+				return rel
+			}
+		}
+		return filepath.Base(cwd)
+	}
+	return ExtractProjectName(transcriptPath)
+}
+
 // ExtractProjectName derives a project name from a Claude Code transcript path.
 //
 // Path format: ~/.claude/projects/-Users-username-repos-projectname/session-id.jsonl
@@ -180,10 +196,13 @@ func extractSessionID(transcriptPath string) string {
 }
 
 func expandHome(path string) string {
-	if strings.HasPrefix(path, "~/") {
+	if path == "~" || strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return path
+		}
+		if path == "~" {
+			return home
 		}
 		return filepath.Join(home, path[2:])
 	}
