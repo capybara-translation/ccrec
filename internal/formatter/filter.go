@@ -6,13 +6,18 @@ import (
 	"github.com/capybara-translation/ccrec/internal/parser"
 )
 
-// excludedPatterns are substrings that indicate non-content messages.
+// excludedPatterns are substrings found anywhere in the message.
 var excludedPatterns = []string{
 	"API Error",
 	"[Request interrupted",
+}
+
+// excludedPrefixes match only when the message starts with these substrings,
+// reducing false positives from mid-text occurrences.
+var excludedPrefixes = []string{
 	"<command-name>",
+	"<command-message>",
 	"<bash-input>",
-	"<local-command-stdout>",
 	"Caveat: The messages below were generated",
 }
 
@@ -52,12 +57,19 @@ func shouldInclude(rec *parser.Record, includeToolUse bool) bool {
 	} else {
 		text = parser.ExtractText(rec.Message.Content)
 	}
-	if strings.TrimSpace(text) == "" {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
 		return false
 	}
 
 	for _, pat := range excludedPatterns {
-		if strings.Contains(text, pat) {
+		if strings.Contains(trimmed, pat) {
+			return false
+		}
+	}
+
+	for _, prefix := range excludedPrefixes {
+		if strings.HasPrefix(trimmed, prefix) {
 			return false
 		}
 	}

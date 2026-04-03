@@ -2,8 +2,12 @@ package parser
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 )
+
+// localCommandStdoutTagRe matches <local-command-stdout> open/close tags.
+var localCommandStdoutTagRe = regexp.MustCompile(`</?local-command-stdout>`)
 
 // ExtractText extracts human-readable text from a message's content field.
 // content can be either a plain string or an array of ContentBlock objects.
@@ -16,7 +20,7 @@ func ExtractText(content json.RawMessage) string {
 	// Try as a plain string first.
 	var s string
 	if err := json.Unmarshal(content, &s); err == nil {
-		return s
+		return stripSystemTags(s)
 	}
 
 	// Try as an array of content blocks.
@@ -30,7 +34,7 @@ func ExtractText(content json.RawMessage) string {
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
-			if t := strings.TrimSpace(b.Text); t != "" {
+			if t := strings.TrimSpace(stripSystemTags(b.Text)); t != "" {
 				parts = append(parts, t)
 			}
 		// Skip: thinking, tool_use, tool_result
@@ -48,7 +52,7 @@ func ExtractTextWithToolUse(content json.RawMessage) string {
 
 	var s string
 	if err := json.Unmarshal(content, &s); err == nil {
-		return s
+		return stripSystemTags(s)
 	}
 
 	var blocks []ContentBlock
@@ -60,7 +64,7 @@ func ExtractTextWithToolUse(content json.RawMessage) string {
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
-			if t := strings.TrimSpace(b.Text); t != "" {
+			if t := strings.TrimSpace(stripSystemTags(b.Text)); t != "" {
 				parts = append(parts, t)
 			}
 		case "tool_use":
@@ -92,6 +96,12 @@ func ExtractImages(content json.RawMessage) []ImageSource {
 		}
 	}
 	return images
+}
+
+// stripSystemTags removes <local-command-stdout> tags from text, keeping the content inside.
+// Other system tags (command-name, etc.) are preserved so they can be caught by excludedPatterns.
+func stripSystemTags(s string) string {
+	return strings.TrimSpace(localCommandStdoutTagRe.ReplaceAllString(s, ""))
 }
 
 func formatToolUse(b ContentBlock) string {
