@@ -24,7 +24,7 @@ type HookInput struct {
 func Run(args []string) {
 	fs := flag.NewFlagSet("hook", flag.ExitOnError)
 	dir := fs.String("dir", "", "Output directory (required)")
-	base := fs.String("base", "", "Base path to strip from cwd for project name (e.g., ~/repos)")
+	base := fs.String("base", "", "Base path to strip from project directory for project name (e.g., ~/repos)")
 	tools := fs.Bool("tools", false, "Include tool use summaries")
 	all := fs.Bool("all", false, "Disable filtering (include all messages)")
 	images := fs.Bool("images", false, "Extract and embed images")
@@ -67,14 +67,19 @@ func Run(args []string) {
 		return
 	}
 
-	// Derive project name from cwd, falling back to transcript path.
+	// Derive project name: CLAUDE_PROJECT_DIR > cwd > transcript path.
+	claudeProjectDir := os.Getenv("CLAUDE_PROJECT_DIR")
+	projectDir := claudeProjectDir
+	if projectDir == "" {
+		projectDir = input.CWD
+	}
 	basePath := ""
 	if *base != "" {
 		basePath = expandHome(*base)
 	}
-	projectName := deriveProjectName(input.CWD, basePath, input.TranscriptPath)
+	projectName := deriveProjectName(projectDir, basePath, input.TranscriptPath)
 	if projectName == "" {
-		fmt.Fprintf(os.Stderr, "ccrec hook: could not determine project name from cwd=%q transcript=%q\n", input.CWD, input.TranscriptPath)
+		fmt.Fprintf(os.Stderr, "ccrec hook: could not determine project name from CLAUDE_PROJECT_DIR=%q cwd=%q transcript=%q\n", claudeProjectDir, input.CWD, input.TranscriptPath)
 		os.Exit(1)
 	}
 
@@ -102,13 +107,13 @@ func Run(args []string) {
 	baseName := sessionDate + "_" + sessionID
 	fileName := baseName + ".md"
 
-	projectDir := filepath.Join(outDir, projectName)
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "ccrec hook: mkdir %s: %v\n", projectDir, err)
+	outProjectDir := filepath.Join(outDir, projectName)
+	if err := os.MkdirAll(outProjectDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "ccrec hook: mkdir %s: %v\n", outProjectDir, err)
 		os.Exit(1)
 	}
 
-	outPath := filepath.Join(projectDir, fileName)
+	outPath := filepath.Join(outProjectDir, fileName)
 	f, err := os.Create(outPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ccrec hook: create %s: %v\n", outPath, err)
@@ -121,7 +126,7 @@ func Run(args []string) {
 		IncludeToolUse: *tools,
 		IncludeAll:     *all,
 		IncludeImages:  *images,
-		AttachmentsDir: filepath.Join(projectDir, "attachments_"+baseName),
+		AttachmentsDir: filepath.Join(outProjectDir, "attachments_"+baseName),
 	}
 	if err := formatter.FormatMarkdown(f, records, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "ccrec hook: format error: %v\n", err)
@@ -129,18 +134,19 @@ func Run(args []string) {
 	}
 }
 
-// deriveProjectName determines the project name from cwd, an optional base path, and the transcript path.
-// When basePath is set and cwd is under it, the relative path is used (e.g., "my-app1/backend").
-// Otherwise it falls back to filepath.Base(cwd), then to ExtractProjectName from the transcript path.
-func deriveProjectName(cwd, basePath, transcriptPath string) string {
-	if cwd != "" {
+// deriveProjectName determines the project name from the project directory (CLAUDE_PROJECT_DIR or cwd),
+// an optional base path, and the transcript path.
+// When basePath is set and the project directory is under it, the relative path is used (e.g., "my-app1/backend").
+// Otherwise it falls back to filepath.Base of the project directory, then to ExtractProjectName from the transcript path.
+func deriveProjectName(projectDir, basePath, transcriptPath string) string {
+	if projectDir != "" {
 		if basePath != "" {
-			rel, err := filepath.Rel(basePath, cwd)
+			rel, err := filepath.Rel(basePath, projectDir)
 			if err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
 				return rel
 			}
 		}
-		return filepath.Base(cwd)
+		return filepath.Base(projectDir)
 	}
 	return ExtractProjectName(transcriptPath)
 }

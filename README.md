@@ -104,12 +104,12 @@ ccrec hook -base ~/repos -dir <output-directory>
 
 The `hook` subcommand:
 
-1. Reads the hook JSON from stdin (`transcript_path`, `session_id`, etc.)
-2. Derives the project name from the working directory (see below)
+1. Reads the hook JSON from stdin (`transcript_path`, `session_id`, `cwd`, etc.)
+2. Derives the project name from `CLAUDE_PROJECT_DIR` (falling back to cwd)
 3. Converts the transcript to Markdown
 4. Saves it as `<output-directory>/<project-name>/<date>_<session-id>.md`
 
-With `-base`, the project name is the relative path from the base to the working directory. For example, if cwd is `~/repos/my-app/backend` and base is `~/repos`, the project name becomes `my-app/backend`. Without `-base`, only the directory basename is used (e.g., `backend`).
+The project directory is determined from the `CLAUDE_PROJECT_DIR` environment variable (set automatically by Claude Code), falling back to cwd. With `-base`, the project name is the relative path from the base to the project directory. For example, if the project directory is `~/repos/my-app/backend` and base is `~/repos`, the project name becomes `my-app/backend`. Without `-base`, only the directory basename is used (e.g., `backend`).
 
 ### Setup
 
@@ -147,8 +147,9 @@ Replace `/path/to/ccrec` with the actual path to the binary and adjust the `-dir
 ### Behavior
 
 - Saves to `<output-directory>/<project-name>/<date>_<session-id>.md`
-- With `-base`, project name is the relative path from base to cwd (e.g., `my-app/backend`)
-- Without `-base`, project name is the cwd basename (e.g., `backend`)
+- Project directory is `CLAUDE_PROJECT_DIR` if set, otherwise cwd
+- With `-base`, project name is the relative path from base to the project directory (e.g., `my-app/backend`)
+- Without `-base`, project name is the project directory basename (e.g., `backend`)
 - Date is derived from the first message timestamp (stable across midnight)
 - Session ID is the first 8 characters of the transcript filename
 - Overwrites the same file on every invocation within a session
