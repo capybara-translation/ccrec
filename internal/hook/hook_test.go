@@ -268,6 +268,109 @@ func TestRunIntegration(t *testing.T) {
 	}
 }
 
+func TestRunIntegration_SkipsEmptyOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	// Build the binary.
+	binPath := filepath.Join(t.TempDir(), "ccrec")
+	build := exec.Command("go", "build", "-o", binPath, "../../cmd/ccrec")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	// Transcript with only meta/system records — no meaningful user or assistant messages.
+	metaOnlyContent := `{"type":"user","isMeta":true,"message":{"role":"user","content":"meta"},"timestamp":"2026-01-15T10:00:00Z"}
+{"type":"system","message":{"role":"system","content":"system info"},"timestamp":"2026-01-15T10:00:01Z"}
+`
+	// Transcript with only tool_use (no text) — filtered out without --tools.
+	toolOnlyContent := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/test.go"}}]},"timestamp":"2026-01-15T10:00:00Z"}
+`
+
+	tests := []struct {
+		name       string
+		transcript string
+		extraArgs  []string
+		wantFile   bool
+	}{
+		{
+			name:       "meta-only transcript produces no output",
+			transcript: metaOnlyContent,
+			wantFile:   false,
+		},
+		{
+			name:       "tool-only transcript without --tools produces no output",
+			transcript: toolOnlyContent,
+			wantFile:   false,
+		},
+		{
+			name:       "tool-only transcript with --tools produces output",
+			transcript: toolOnlyContent,
+			extraArgs:  []string{"-tools"},
+			wantFile:   true,
+		},
+		{
+			name:       "meta-only transcript with --all produces output",
+			transcript: metaOnlyContent,
+			extraArgs:  []string{"-all"},
+			wantFile:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			transcriptDir := t.TempDir()
+			transcriptPath := filepath.Join(transcriptDir, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
+			if err := os.WriteFile(transcriptPath, []byte(tt.transcript), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			args := []string{"hook", "-dir", outDir}
+			args = append(args, tt.extraArgs...)
+
+			input := HookInput{
+				TranscriptPath: transcriptPath,
+				CWD:            "/Users/junya/repos/test-project",
+			}
+			stdinBytes, _ := json.Marshal(input)
+
+			cmd := exec.Command(binPath, args...)
+			cmd.Stdin = strings.NewReader(string(stdinBytes))
+			// Remove CLAUDE_PROJECT_DIR to use cwd fallback.
+			env := []string{}
+			for _, e := range os.Environ() {
+				if !strings.HasPrefix(e, "CLAUDE_PROJECT_DIR=") {
+					env = append(env, e)
+				}
+			}
+			cmd.Env = env
+
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("hook failed: %v\n%s", err, out)
+			}
+
+			projectDir := filepath.Join(outDir, "test-project")
+			entries, _ := os.ReadDir(projectDir)
+			found := false
+			for _, e := range entries {
+				if strings.HasSuffix(e.Name(), ".md") {
+					found = true
+					break
+				}
+			}
+
+			if tt.wantFile && !found {
+				t.Errorf("expected .md file in %s but none found", projectDir)
+			}
+			if !tt.wantFile && found {
+				t.Errorf("expected no .md file in %s but one was created", projectDir)
+			}
+		})
+	}
+}
+
 func TestExpandHome(t *testing.T) {
 	got := expandHome("/absolute/path")
 	if got != "/absolute/path" {

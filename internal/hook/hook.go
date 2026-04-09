@@ -94,6 +94,14 @@ func Run(args []string) {
 		return
 	}
 
+	// Skip when no meaningful messages exist after filtering to avoid
+	// creating empty Markdown files and directories. Note: FormatMarkdown
+	// applies the same filter internally; the duplication is intentional
+	// to prevent file-system side effects before they happen.
+	if !*all && len(formatter.FilterRecords(records, *tools)) == 0 {
+		return
+	}
+
 	// Build output path: {dir}/{project}/{date}_{session_id_short}.md
 	// Use the first non-zero timestamp (skip file-history-snapshot etc.)
 	sessionDate := "unknown"
