@@ -123,7 +123,7 @@ Add the following to your Claude Code settings (`~/.claude/settings.json`):
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/ccrec hook -images -base ~/repos -dir ~/Documents/obsidian/vault/projects"
+            "command": "/path/to/ccrec hook -images -base <your-repos-root> -dir <output-directory>"
           }
         ]
       }
@@ -133,7 +133,7 @@ Add the following to your Claude Code settings (`~/.claude/settings.json`):
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/ccrec hook -images -base ~/repos -dir ~/Documents/obsidian/vault/projects"
+            "command": "/path/to/ccrec hook -images -base <your-repos-root> -dir <output-directory>"
           }
         ]
       }
@@ -142,7 +142,7 @@ Add the following to your Claude Code settings (`~/.claude/settings.json`):
 }
 ```
 
-Replace `/path/to/ccrec` with the actual path to the binary and adjust the `-dir` path to your Obsidian vault or any directory you prefer.
+Replace the placeholders: `/path/to/ccrec` with the actual binary path, `<your-repos-root>` with your repositories root (e.g., `~/repos`), and `<output-directory>` with where you want the Markdown files saved (e.g., `~/Documents/obsidian/vault/projects`).
 
 ### Behavior
 
