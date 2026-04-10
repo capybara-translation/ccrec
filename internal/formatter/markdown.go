@@ -23,8 +23,54 @@ type Options struct {
 	SourcePath     string
 }
 
-// htmlTagRe matches HTML tags. Used to escape HTML that could break Markdown rendering.
+// htmlTagRe matches HTML tags, capturing the tag name in group 2.
 var htmlTagRe = regexp.MustCompile(`<(/?)([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*>`)
+
+// htmlElements is the set of standard HTML element names (HTML Living Standard
+// plus common legacy elements). Only these are escaped in Markdown output;
+// non-HTML tags (e.g., XML tags like <seg>, <bpt>) are left as-is so
+// technical content stays readable.
+//
+// Elements that collide with common XML/localization formats (e.g., <source>
+// in XLIFF) are intentionally excluded to avoid false positives.
+var htmlElements = map[string]bool{
+	// Main root / metadata
+	"html": true, "head": true, "body": true, "title": true, "meta": true,
+	"link": true, "base": true, "style": true, "script": true, "noscript": true,
+	// Sectioning
+	"header": true, "footer": true, "nav": true, "main": true, "article": true,
+	"section": true, "aside": true, "address": true, "hgroup": true, "search": true,
+	// Headings
+	"h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
+	// Block content
+	"div": true, "p": true, "hr": true, "pre": true, "blockquote": true,
+	"figure": true, "figcaption": true, "details": true, "summary": true,
+	"dialog": true, "menu": true,
+	// List
+	"ul": true, "ol": true, "li": true, "dl": true, "dt": true, "dd": true,
+	// Table
+	"table": true, "thead": true, "tbody": true, "tfoot": true,
+	"tr": true, "th": true, "td": true, "caption": true, "colgroup": true, "col": true,
+	// Inline text
+	"span": true, "a": true, "b": true, "strong": true, "i": true, "em": true,
+	"u": true, "s": true, "del": true, "ins": true, "sub": true, "sup": true,
+	"small": true, "mark": true, "abbr": true, "cite": true, "q": true,
+	"code": true, "kbd": true, "samp": true, "var": true, "dfn": true,
+	"br": true, "wbr": true, "bdi": true, "bdo": true, "ruby": true, "rt": true, "rp": true,
+	"time": true, "data": true, "output": true,
+	// Media / embedded (note: "source" excluded — collides with XLIFF <source>)
+	"img": true, "picture": true, "video": true, "audio": true,
+	"track": true, "iframe": true, "embed": true, "object": true, "param": true,
+	"canvas": true, "svg": true, "math": true, "map": true, "area": true,
+	// Form
+	"form": true, "input": true, "button": true, "select": true, "option": true,
+	"optgroup": true, "textarea": true, "label": true, "fieldset": true, "legend": true,
+	"datalist": true, "progress": true, "meter": true,
+	// Template / slot
+	"template": true, "slot": true,
+	// Legacy (deprecated but still rendered by browsers/Markdown renderers)
+	"font": true, "center": true, "marquee": true, "strike": true, "tt": true, "big": true,
+}
 
 // FormatMarkdown converts parsed records into a Markdown document.
 func FormatMarkdown(w io.Writer, records []*parser.Record, opts Options) error {
@@ -194,10 +240,18 @@ func escapeHTMLInMarkdown(text string) string {
 	return strings.Join(result, "\n")
 }
 
-// escapeHTMLTags escapes HTML tags in a single line, preserving Markdown formatting.
-// It only escapes actual HTML tags (not things like `x < 10`).
+// escapeHTMLTags escapes known HTML tags in a single line.
+// Non-HTML tags (XML, custom elements) are left untouched so that
+// technical content like TMX or XLIFF markup remains readable.
 func escapeHTMLTags(line string) string {
 	return htmlTagRe.ReplaceAllStringFunc(line, func(match string) string {
-		return html.EscapeString(match)
+		sub := htmlTagRe.FindStringSubmatch(match)
+		if len(sub) < 3 {
+			return match
+		}
+		if htmlElements[strings.ToLower(sub[2])] {
+			return html.EscapeString(match)
+		}
+		return match
 	})
 }

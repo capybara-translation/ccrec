@@ -203,6 +203,87 @@ func TestEscapeHTMLInMarkdown_NotHTMLTag(t *testing.T) {
 	}
 }
 
+func TestEscapeHTMLInMarkdown_NonHTMLTagsPreserved(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"TMX seg tag", `<seg>Hello world</seg>`},
+		{"TMX bpt/ept", `<bpt i="1">&lt;b&gt;</bpt>Bold<ept i="1">&lt;/b&gt;</ept>`},
+		{"XLIFF trans-unit", `<trans-unit id="1"><target>text</target></trans-unit>`},
+		{"XLIFF source", `<source xml:lang="en">Hello</source>`},
+		{"custom XML", `<myCustomTag attr="val">content</myCustomTag>`},
+		{"self-closing XML", `<x id="1"/>`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := escapeHTMLInMarkdown(tt.input)
+			if got != tt.input {
+				t.Errorf("non-HTML tag should NOT be escaped\ninput: %s\ngot:   %s", tt.input, got)
+			}
+		})
+	}
+}
+
+func TestEscapeHTMLInMarkdown_MixedHTMLAndXML(t *testing.T) {
+	input := `<div>HTML content</div> and <seg>XML content</seg>`
+	got := escapeHTMLInMarkdown(input)
+
+	if strings.Contains(got, "<div>") {
+		t.Error("HTML <div> should be escaped")
+	}
+	if !strings.Contains(got, "<seg>XML content</seg>") {
+		t.Errorf("XML <seg> should be preserved, got: %s", got)
+	}
+}
+
+func TestEscapeHTMLInMarkdown_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"uppercase", `<DIV>content</DIV>`},
+		{"mixed case", `<Span>content</Span>`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := escapeHTMLInMarkdown(tt.input)
+			if got == tt.input {
+				t.Errorf("HTML tag should be escaped regardless of case\ninput: %s\ngot:   %s", tt.input, got)
+			}
+		})
+	}
+}
+
+func TestEscapeHTMLInMarkdown_SelfClosingHTML(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"br", `line<br/>break`},
+		{"img", `<img src="x.png"/>`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := escapeHTMLInMarkdown(tt.input)
+			if got == tt.input {
+				t.Errorf("self-closing HTML tag should be escaped\ninput: %s\ngot:   %s", tt.input, got)
+			}
+		})
+	}
+}
+
+func TestEscapeHTMLInMarkdown_LegacyHTML(t *testing.T) {
+	input := `<font color="red">old</font> and <center>centered</center>`
+	got := escapeHTMLInMarkdown(input)
+	if strings.Contains(got, "<font") {
+		t.Error("legacy <font> should be escaped")
+	}
+	if strings.Contains(got, "<center>") {
+		t.Error("legacy <center> should be escaped")
+	}
+}
+
 func TestFormatRole(t *testing.T) {
 	tests := []struct {
 		input string
