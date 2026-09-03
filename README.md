@@ -19,6 +19,15 @@ A CLI tool that converts [Claude Code](https://docs.anthropic.com/en/docs/claude
 brew install capybara-translation/tap/ccrec
 ```
 
+Homebrew 6.0+ refuses to load formulae from third-party taps until you trust
+them ([Tap Trust](https://docs.brew.sh/Tap-Trust)). If `brew install` or
+`brew upgrade` fails with `Refusing to load formula ... from untrusted tap`,
+trust the formula first:
+
+```bash
+brew trust --formula capybara-translation/tap/ccrec
+```
+
 ### go install
 
 Requires Go 1.25+.
