@@ -2,8 +2,10 @@ package hook
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,9 +85,14 @@ func Run(args []string) {
 		os.Exit(1)
 	}
 
-	// Parse transcript.
+	// Parse transcript. A missing file is not an error: with
+	// --no-session-persistence, Claude Code passes a transcript_path
+	// that was never written.
 	records, err := parser.ParseFile(input.TranscriptPath)
 	if err != nil {
+		if errors.Is(err, iofs.ErrNotExist) {
+			return
+		}
 		fmt.Fprintf(os.Stderr, "ccrec hook: parse error: %v\n", err)
 		os.Exit(1)
 	}

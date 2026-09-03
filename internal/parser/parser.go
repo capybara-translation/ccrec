@@ -19,7 +19,8 @@ const (
 func ParseFile(path string) ([]*Record, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
+		// *os.PathError already includes the operation and path.
+		return nil, err
 	}
 	defer f.Close()
 

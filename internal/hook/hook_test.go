@@ -371,6 +371,53 @@ func TestRunIntegration_SkipsEmptyOutput(t *testing.T) {
 	}
 }
 
+func TestRunIntegration_SkipsMissingTranscript(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	// Build the binary.
+	binPath := filepath.Join(t.TempDir(), "ccrec")
+	build := exec.Command("go", "build", "-o", binPath, "../../cmd/ccrec")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	// With --no-session-persistence, Claude Code passes a transcript_path
+	// that was never written. The hook must exit 0 silently (issue #1).
+	outDir := t.TempDir()
+	transcriptPath := filepath.Join(t.TempDir(), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
+
+	input := HookInput{
+		TranscriptPath: transcriptPath,
+		CWD:            "/Users/junya/repos/test-project",
+	}
+	stdinBytes, _ := json.Marshal(input)
+
+	cmd := exec.Command(binPath, "hook", "-dir", outDir)
+	cmd.Stdin = strings.NewReader(string(stdinBytes))
+	env := []string{}
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "CLAUDE_PROJECT_DIR=") {
+			env = append(env, e)
+		}
+	}
+	cmd.Env = env
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("hook should exit 0 for missing transcript, got: %v\n%s", err, out)
+	}
+	if len(out) != 0 {
+		t.Errorf("hook should produce no output for missing transcript, got: %s", out)
+	}
+
+	entries, _ := os.ReadDir(outDir)
+	if len(entries) != 0 {
+		t.Errorf("hook should create no files for missing transcript, found %d entries in %s", len(entries), outDir)
+	}
+}
+
 func TestExpandHome(t *testing.T) {
 	got := expandHome("/absolute/path")
 	if got != "/absolute/path" {
