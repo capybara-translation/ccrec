@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,7 +89,7 @@ func Run(args []string) {
 	// that was never written.
 	records, err := parser.ParseFile(input.TranscriptPath)
 	if err != nil {
-		if errors.Is(err, iofs.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) {
 			return
 		}
 		fmt.Fprintf(os.Stderr, "ccrec hook: parse error: %v\n", err)

@@ -1,9 +1,25 @@
 package parser
 
 import (
+	"errors"
+	"io/fs"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestParseFile_MissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nonexistent.jsonl")
+	_, err := ParseFile(path)
+	if err == nil {
+		t.Fatal("ParseFile should return an error for a missing file")
+	}
+	// Callers (hook.Run) rely on errors.Is to detect a missing transcript;
+	// re-wrapping with %v instead of %w would break that silently.
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("errors.Is(err, fs.ErrNotExist) = false, want true (err: %v)", err)
+	}
+}
 
 func TestParseReader_UserMessage(t *testing.T) {
 	input := `{"type":"user","message":{"role":"user","content":"hello"},"timestamp":"2026-01-01T00:00:00Z"}`
