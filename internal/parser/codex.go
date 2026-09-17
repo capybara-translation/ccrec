@@ -139,15 +139,26 @@ func normalizeCodexResponse(record codexRecord, line int, result *Result) *Recor
 	switch record.Payload.Role {
 	case "user":
 		kinds := record.Payload.Metadata.ContentItemKinds
-		if !slices.Contains(kinds, "user.text") {
+		hasUserText := slices.Contains(kinds, "user.text")
+		hasUnknownKind := containsUnknownContentKind(kinds)
+		if hasUnknownKind {
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{
+				Line:    line,
+				Message: "Codex user response_item contains an unknown content visibility kind",
+				Strict:  true,
+			})
+		}
+		if !hasUserText {
 			if allKnownHiddenContentKinds(kinds) {
 				return nil
 			}
-			result.Diagnostics = append(result.Diagnostics, Diagnostic{
-				Line:    line,
-				Message: "skipped Codex user response_item without explicit user.text visibility",
-				Strict:  true,
-			})
+			if !hasUnknownKind {
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{
+					Line:    line,
+					Message: "skipped Codex user response_item without explicit user.text visibility",
+					Strict:  true,
+				})
+			}
 			return nil
 		}
 		return newNormalizedRecord("user", PhaseNone, textFromVisibleUserContent(record.Payload.Content, record.Payload.Metadata.ContentItemKinds), record.Timestamp, line, result)
@@ -229,14 +240,28 @@ func allKnownHiddenContentKinds(kinds []string) bool {
 		return false
 	}
 	for _, kind := range kinds {
-		if !strings.HasPrefix(kind, "agents_md.") &&
-			!strings.HasPrefix(kind, "environments.") &&
-			!strings.HasPrefix(kind, "plugins.") &&
-			!strings.HasPrefix(kind, "permissions.") {
+		if !isKnownHiddenContentKind(kind) {
 			return false
 		}
 	}
 	return true
+}
+
+func containsUnknownContentKind(kinds []string) bool {
+	for _, kind := range kinds {
+		if kind == "user.text" || isKnownHiddenContentKind(kind) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isKnownHiddenContentKind(kind string) bool {
+	return strings.HasPrefix(kind, "agents_md.") ||
+		strings.HasPrefix(kind, "environments.") ||
+		strings.HasPrefix(kind, "plugins.") ||
+		strings.HasPrefix(kind, "permissions.")
 }
 
 func firstNonEmpty(values ...string) string {

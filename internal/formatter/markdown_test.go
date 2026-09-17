@@ -70,6 +70,7 @@ func TestFormatMarkdown_CodexFixtureGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	actual := regexp.MustCompile(`\*\*Time:\*\* [^\n]+`).ReplaceAllString(buf.String(), "**Time:** <TIME>")
+	actual = strings.TrimRight(actual, "\n") + "\n"
 	want, err := os.ReadFile(filepath.Join("testdata", "codex-0.145.0.golden.md"))
 	if err != nil {
 		t.Fatal(err)

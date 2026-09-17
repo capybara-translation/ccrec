@@ -204,6 +204,29 @@ func TestParseReaderWithOptions_CodexUnknownUserMetadataIsStrict(t *testing.T) {
 	}
 }
 
+func TestParseReaderWithOptions_CodexMixedVisibleAndUnknownUserMetadataIsStrict(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		kinds   string
+	}{
+		{name: "visible and unknown", content: `[{"type":"input_text","text":"visible"},{"type":"input_text","text":"future data"}]`, kinds: `["user.text","future.visible_kind"]`},
+		{name: "known hidden and unknown", content: `[{"type":"input_text","text":"hidden"},{"type":"input_text","text":"future data"}]`, kinds: `["agents_md.instructions","future.kind"]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := strings.Join([]string{
+				`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+				`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":` + tt.content + `,"internal_chat_message_metadata_passthrough":{"content_item_kinds":` + tt.kinds + `}}}`,
+			}, "\n")
+
+			if _, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true}); err == nil {
+				t.Fatal("unknown metadata should fail strict parsing")
+			}
+		})
+	}
+}
+
 func TestParseReaderWithOptions_CodexDoesNotDeduplicateRepeatedVisibleMessages(t *testing.T) {
 	input := strings.Join([]string{
 		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
