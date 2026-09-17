@@ -3,6 +3,9 @@ package formatter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -56,24 +59,24 @@ func TestFormatMarkdown_BasicOutput(t *testing.T) {
 	}
 }
 
-func TestFormatMarkdown_SortsByTimestamp(t *testing.T) {
+func TestFormatMarkdown_PreservesSourceOrder(t *testing.T) {
 	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	// Records given in reverse order.
+	// The source order is authoritative even when timestamps move backwards.
 	records := []*parser.Record{
 		{
 			Type:      "assistant",
-			Timestamp: ts.Add(1 * time.Second),
+			Timestamp: ts,
 			Message: &parser.Message{
 				Role:    "assistant",
-				Content: json.RawMessage(`[{"type":"text","text":"second"}]`),
+				Content: json.RawMessage(`[{"type":"text","text":"first in source"}]`),
 			},
 		},
 		{
 			Type:      "user",
-			Timestamp: ts,
+			Timestamp: ts.Add(-1 * time.Second),
 			Message: &parser.Message{
 				Role:    "user",
-				Content: json.RawMessage(`"first"`),
+				Content: json.RawMessage(`"second in source"`),
 			},
 		},
 	}
@@ -85,10 +88,30 @@ func TestFormatMarkdown_SortsByTimestamp(t *testing.T) {
 	}
 
 	output := buf.String()
-	userIdx := strings.Index(output, "## User")
 	assistantIdx := strings.Index(output, "## Assistant")
-	if userIdx > assistantIdx {
-		t.Error("User should appear before Assistant after sorting")
+	userIdx := strings.Index(output, "## User")
+	if assistantIdx > userIdx {
+		t.Error("formatter should preserve source order instead of sorting by timestamp")
+	}
+}
+
+func TestFormatMarkdown_UsesNormalizedRole(t *testing.T) {
+	records := []*parser.Record{
+		{
+			Role: "user",
+			Message: &parser.Message{
+				Role:    "user",
+				Content: json.RawMessage(`"normalized user"`),
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := FormatMarkdown(&buf, records, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "## User") || !strings.Contains(buf.String(), "normalized user") {
+		t.Fatalf("normalized role was not formatted:\n%s", buf.String())
 	}
 }
 
@@ -130,6 +153,30 @@ func TestFormatMarkdown_IncludesSourcePath(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "**File:** `/path/to/session.jsonl`") {
 		t.Error("output should include source path")
+	}
+}
+
+type failAfterWriter struct {
+	remaining int
+}
+
+func (w *failAfterWriter) Write(p []byte) (int, error) {
+	if w.remaining <= 0 {
+		return 0, errors.New("simulated write failure")
+	}
+	if len(p) > w.remaining {
+		n := w.remaining
+		w.remaining = 0
+		return n, errors.New("simulated write failure")
+	}
+	w.remaining -= len(p)
+	return len(p), nil
+}
+
+func TestFormatMarkdown_PropagatesWriterFailure(t *testing.T) {
+	w := &failAfterWriter{remaining: 12}
+	if err := FormatMarkdown(w, nil, Options{}); err == nil {
+		t.Fatal("FormatMarkdown should return the underlying writer error")
 	}
 }
 
@@ -299,5 +346,34 @@ func TestFormatRole(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("formatRole(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestSaveImage_UsesPrivatePermissions(t *testing.T) {
+	attachments := filepath.Join(t.TempDir(), "attachments")
+	if err := os.Mkdir(attachments, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldImage := filepath.Join(attachments, "image_001.png")
+	if err := os.WriteFile(oldImage, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := saveImage(attachments, 1, parser.ImageSource{MediaType: "image/png", Data: "eA=="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirInfo, err := os.Stat(attachments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("attachments mode = %o, want 700", got)
+	}
+	fileInfo, err := os.Stat(filepath.Join(attachments, "image_001.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("image mode = %o, want 600", got)
 	}
 }

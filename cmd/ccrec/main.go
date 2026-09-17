@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -11,6 +12,7 @@ import (
 	"github.com/capybara-translation/ccrec/internal/formatter"
 	"github.com/capybara-translation/ccrec/internal/hook"
 	"github.com/capybara-translation/ccrec/internal/parser"
+	"github.com/capybara-translation/ccrec/internal/safefile"
 )
 
 var version = "dev"
@@ -45,18 +47,22 @@ func runConvert() {
 		includeToolUse bool
 		includeAll     bool
 		includeImages  bool
+		providerName   string
+		strict         bool
 	)
 
 	flag.StringVar(&output, "o", "", "Output file path (default: stdout)")
 	flag.BoolVar(&includeToolUse, "tools", false, "Include tool use summaries")
 	flag.BoolVar(&includeAll, "all", false, "Disable filtering (include all messages)")
 	flag.BoolVar(&includeImages, "images", false, "Extract and embed images (requires -o)")
+	flag.StringVar(&providerName, "provider", "auto", "Transcript provider: auto, claude, or codex")
+	flag.BoolVar(&strict, "strict", false, "Fail when supported messages cannot be extracted safely")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: ccrec [options] <transcript.jsonl>\n")
 		fmt.Fprintf(os.Stderr, "       ccrec hook [options]\n\n")
-		fmt.Fprintf(os.Stderr, "Convert Claude Code conversation transcripts (JSONL) to Markdown.\n\n")
+		fmt.Fprintf(os.Stderr, "Convert Claude Code or Codex conversation transcripts (JSONL) to Markdown.\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
-		fmt.Fprintf(os.Stderr, "  hook    Run as a Claude Code Stop hook (reads stdin)\n\n")
+		fmt.Fprintf(os.Stderr, "  hook    Run as a Claude Code or Codex lifecycle hook (reads stdin)\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
@@ -78,34 +84,43 @@ func runConvert() {
 
 	inputPath := flag.Arg(0)
 
-	// Parse JSONL.
-	records, err := parser.ParseFile(inputPath)
+	provider, err := providerFromFlag(providerName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
+	// Parse JSONL.
+	result, err := parser.ParseFileWithOptions(inputPath, parser.ParseOptions{Provider: provider, Strict: strict})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Line > 0 {
+			fmt.Fprintf(os.Stderr, "warning: line %d: %s\n", diagnostic.Line, diagnostic.Message)
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", diagnostic.Message)
+		}
+	}
+	records := result.Records
+
 	if len(records) == 0 {
-		fmt.Fprintf(os.Stderr, "warning: no records found in %s\n", inputPath)
+		if result.InputRecords == 0 {
+			fmt.Fprintf(os.Stderr, "warning: no records found in %s\n", inputPath)
+		} else if len(result.Diagnostics) == 0 {
+			fmt.Fprintf(os.Stderr, "warning: transcript contained records but no supported messages were found (provider=%s)\n", result.Provider)
+		}
 		os.Exit(0)
 	}
 
-	// Determine output destination.
-	var w *os.File
-	if output == "" {
-		w = os.Stdout
-	} else {
+	// Prepare the output directory before rendering.
+	if output != "" {
 		dir := filepath.Dir(output)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			fmt.Fprintf(os.Stderr, "error: create directory %s: %v\n", dir, err)
 			os.Exit(1)
 		}
-		w, err = os.Create(output)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: create output file: %v\n", err)
-			os.Exit(1)
-		}
-		defer w.Close()
 	}
 
 	// Format as Markdown.
@@ -126,7 +141,12 @@ func runConvert() {
 		SourcePath:     absOrOriginal(inputPath),
 	}
 
-	if err := formatter.FormatMarkdown(w, records, opts); err != nil {
+	if output == "" {
+		err = formatter.FormatMarkdown(os.Stdout, records, opts)
+	} else {
+		err = writeMarkdownFile(output, records, opts)
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: format markdown: %v\n", err)
 		os.Exit(1)
 	}
@@ -134,6 +154,16 @@ func runConvert() {
 	if output != "" {
 		fmt.Fprintf(os.Stderr, "wrote %s\n", output)
 	}
+}
+
+func providerFromFlag(value string) (parser.Provider, error) {
+	return parser.ParseProvider(value)
+}
+
+func writeMarkdownFile(path string, records []*parser.Record, opts formatter.Options) error {
+	return safefile.Write(path, 0o600, func(w io.Writer) error {
+		return formatter.FormatMarkdown(w, records, opts)
+	})
 }
 
 func absOrOriginal(path string) string {

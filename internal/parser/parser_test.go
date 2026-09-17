@@ -103,3 +103,51 @@ func TestParseReader_LargeLine(t *testing.T) {
 		t.Fatalf("got %d records, want 1", len(records))
 	}
 }
+
+func TestParseReaderWithOptions_EmptyTranscriptIsNotDetectionError(t *testing.T) {
+	result, err := parseReaderWithOptions(strings.NewReader("\n"), ParseOptions{Provider: ProviderAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 0 || result.InputRecords != 0 {
+		t.Fatalf("empty result = %d records, %d input records", len(result.Records), result.InputRecords)
+	}
+}
+
+func TestParseReaderWithOptions_RejectsExplicitProviderMismatch(t *testing.T) {
+	input := `{"type":"session_meta","payload":{"id":"session-id"},"timestamp":"2026-09-17T00:00:00Z"}`
+	_, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderClaude})
+	if err == nil {
+		t.Fatal("explicit Claude provider should reject a Codex transcript")
+	}
+}
+
+func TestParseReaderWithOptions_UnknownProviderShapeWarnsUnlessStrict(t *testing.T) {
+	input := `{"type":"future-record","payload":{"value":1}}`
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderAuto})
+	if err != nil {
+		t.Fatalf("non-strict parse returned error: %v", err)
+	}
+	if len(result.Records) != 0 || len(result.Diagnostics) == 0 {
+		t.Fatalf("result = %d records, %d diagnostics; want no records and a warning", len(result.Records), len(result.Diagnostics))
+	}
+
+	if _, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderAuto, Strict: true}); err == nil {
+		t.Fatal("strict parsing should reject an unknown transcript shape")
+	}
+}
+
+func TestParseReaderWithOptions_MalformedOnlyWarnsUnlessStrict(t *testing.T) {
+	input := "not json\n"
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderAuto})
+	if err != nil {
+		t.Fatalf("non-strict parse returned error: %v", err)
+	}
+	if len(result.Records) != 0 || len(result.Diagnostics) == 0 {
+		t.Fatalf("result = %d records, %d diagnostics; want no records and warnings", len(result.Records), len(result.Diagnostics))
+	}
+
+	if _, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderAuto, Strict: true}); err == nil {
+		t.Fatal("strict parsing should reject malformed-only input")
+	}
+}

@@ -1,15 +1,16 @@
 # ccrec
 
-A CLI tool that converts [Claude Code](https://docs.anthropic.com/en/docs/claude-code) conversation transcripts (JSONL) into clean, readable Markdown.
+A CLI tool that converts Claude Code and Codex conversation transcripts (JSONL) into clean, readable Markdown.
 
 ## Features
 
-- **Streaming parser** — Processes JSONL line-by-line with a 16 MB buffer; handles transcripts of any size without loading them entirely into memory.
+- **Line-oriented parser** — Scans JSONL with a 16 MB per-record limit and skips malformed lines without discarding the rest of the transcript.
 - **Smart filtering** — Strips system messages, metadata, API errors, interrupted requests, and empty messages by default.
 - **HTML-safe output** — Escapes HTML tags outside fenced code blocks, preventing Markdown renderers from misinterpreting raw HTML in conversation content.
 - **Tool use summaries** — Optionally includes concise summaries of tool calls (file paths, commands, grep patterns).
 - **Image extraction** — Optionally decodes and saves base64-encoded images from transcripts.
 - **Claude Code hook integration** — Runs as a Stop/SessionEnd hook to automatically save conversations to a directory (e.g., an Obsidian vault).
+- **Codex hook integration** — Saves the visible conversation from a Codex `SessionEnd` hook without exporting injected instructions or reasoning.
 
 ## Installation
 
@@ -50,6 +51,9 @@ go build -o bin/ccrec ./cmd/ccrec
 # Output to stdout
 ccrec session.jsonl
 
+# Select the provider explicitly (auto-detected by default)
+ccrec -provider codex rollout.jsonl
+
 # Output to a file
 ccrec -o output.md session.jsonl
 
@@ -70,6 +74,14 @@ Claude Code stores conversation transcripts as JSONL files under:
 ```
 ~/.claude/projects/<project-path>/<session-id>.jsonl
 ```
+
+Codex commonly stores local session transcripts under:
+
+```
+~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl
+```
+
+Codex exposes `transcript_path` to hooks. Its transcript JSON format is not a stable hook interface, so ccrec uses conservative parsing and regression fixtures for supported formats.
 
 ### Example output
 
@@ -101,6 +113,8 @@ entities (nodes) and relationships (edges)...
 | `-tools`    | Include tool use summaries in the output |
 | `-all`      | Disable filtering; include all messages  |
 | `-images`   | Extract and embed images (requires `-o`)  |
+| `-provider <name>` | Input provider: `auto`, `claude`, or `codex` |
+| `-strict` | Fail if messages cannot be extracted safely |
 
 ## Claude Code Hook Integration
 
@@ -165,6 +179,33 @@ Replace the placeholders: `/path/to/ccrec` with the actual binary path, `<your-r
 - Skips subagent transcripts (only saves the main conversation)
 - Skips execution when `stop_hook_active` is true (prevents infinite loops)
 - Creates the output directory if it doesn't exist
+
+## Codex Hook Integration
+
+For final session archives, use Codex `SessionEnd`. It runs for the main thread when a session ends and has a maximum command timeout of three seconds. The initial Codex setup intentionally omits `-images` to keep execution within that limit.
+
+Add the following to `~/.codex/hooks.json`, replacing the executable, repository root, and output paths with absolute paths:
+
+```json
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/homebrew/bin/ccrec hook -provider codex -base /Users/you/repos -dir /Users/you/Documents/conversations",
+            "timeout": 3,
+            "statusMessage": "Saving conversation log"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+New or changed non-managed hooks must be reviewed and trusted before Codex runs them. Open `/hooks` in Codex to review the definition. The hook uses the supplied `session_id`, `transcript_path`, and `cwd`, writes the Markdown atomically, and defaults transcript files to owner-only permissions.
 
 ## Testing
 

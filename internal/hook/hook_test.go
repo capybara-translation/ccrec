@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/capybara-translation/ccrec/internal/parser"
 )
 
 func TestExtractProjectName(t *testing.T) {
@@ -131,9 +133,14 @@ func TestExtractSessionID(t *testing.T) {
 		want string
 	}{
 		{
+			name: "Codex rollout filename",
+			path: "/path/to/rollout-2026-09-17T18-22-44-01a0aeac-efdc-7e71-869a-157d6c25761c.jsonl",
+			want: "01a0aeac-efdc-7e71-869a-157d6c25761c",
+		},
+		{
 			name: "standard UUID filename",
 			path: "/path/to/42bb222a-a575-4386-bae8-2b0ce9a93d40.jsonl",
-			want: "42bb222a",
+			want: "42bb222a-a575-4386-bae8-2b0ce9a93d40",
 		},
 		{
 			name: "short filename",
@@ -143,7 +150,7 @@ func TestExtractSessionID(t *testing.T) {
 		{
 			name: "no hyphens long name",
 			path: "/path/to/abcdefghijklmnop.jsonl",
-			want: "abcdefgh",
+			want: "abcdefghijklmnop",
 		},
 	}
 
@@ -154,6 +161,36 @@ func TestExtractSessionID(t *testing.T) {
 				t.Errorf("extractSessionID(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveSessionID_FilenameFallbackDoesNotCollideOnSharedPrefix(t *testing.T) {
+	first := resolveSessionID("", "", "/tmp/42bb222a-a575-4386-bae8-2b0ce9a93d40.jsonl", parser.ProviderClaude)
+	second := resolveSessionID("", "", "/tmp/42bb222a-1111-2222-3333-444444444444.jsonl", parser.ProviderClaude)
+	if first == second {
+		t.Fatalf("distinct transcript filenames collided at %q", first)
+	}
+}
+
+func TestResolveSessionID_PrefersHookInputAndSanitizesIt(t *testing.T) {
+	got := resolveSessionID("../hook/session id", "metadata-id", "/tmp/rollout-2026-09-17T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl", parser.ProviderCodex)
+	if !strings.HasPrefix(got, "hook-session-id-") || strings.ContainsAny(got, "/ ") {
+		t.Fatalf("resolved session ID = %q, want a safe hashed hook-session-id token", got)
+	}
+}
+
+func TestSanitizeSessionToken_DifferentUnsafeIDsDoNotCollide(t *testing.T) {
+	withSlash := sanitizeSessionToken("a/b")
+	withSpace := sanitizeSessionToken("a b")
+	if withSlash == withSpace {
+		t.Fatalf("different unsafe IDs collided at %q", withSlash)
+	}
+}
+
+func TestResolveSessionID_UsesCodexMetadataBeforeFilename(t *testing.T) {
+	got := resolveSessionID("", "metadata-full-id", "/tmp/rollout-2026-09-17T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl", parser.ProviderCodex)
+	if got != "metadata-full-id" {
+		t.Fatalf("resolved session ID = %q, want metadata-full-id", got)
 	}
 }
 

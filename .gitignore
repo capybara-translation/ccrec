@@ -143,3 +143,4 @@ tmp/
 bin/
 .idea/
 .claude/settings.local.json
+docs/superpowers/

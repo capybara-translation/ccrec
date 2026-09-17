@@ -36,7 +36,7 @@ func FilterRecords(records []*parser.Record, includeToolUse bool) []*parser.Reco
 
 func shouldInclude(rec *parser.Record, includeToolUse bool) bool {
 	// Only include user and assistant messages.
-	switch rec.Type {
+	switch recordRole(rec) {
 	case "user", "assistant":
 		// continue
 	default:
@@ -75,4 +75,14 @@ func shouldInclude(rec *parser.Record, includeToolUse bool) bool {
 	}
 
 	return true
+}
+
+func recordRole(rec *parser.Record) string {
+	if rec.Role != "" {
+		return rec.Role
+	}
+	if rec.Message != nil && rec.Message.Role != "" {
+		return rec.Message.Role
+	}
+	return rec.Type
 }

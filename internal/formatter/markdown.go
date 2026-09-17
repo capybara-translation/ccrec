@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/capybara-translation/ccrec/internal/parser"
@@ -74,12 +73,13 @@ var htmlElements = map[string]bool{
 
 // FormatMarkdown converts parsed records into a Markdown document.
 func FormatMarkdown(w io.Writer, records []*parser.Record, opts Options) error {
-	// Sort by timestamp.
+	checked := &checkedWriter{writer: w}
+	w = checked
+
+	// Preserve transcript source order. Timestamps are display metadata and may
+	// be missing, equal, or move backwards.
 	sorted := make([]*parser.Record, len(records))
 	copy(sorted, records)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Timestamp.Before(sorted[j].Timestamp)
-	})
 
 	// Filter unless --include-all.
 	if !opts.IncludeAll {
@@ -103,7 +103,28 @@ func FormatMarkdown(w io.Writer, records []*parser.Record, opts Options) error {
 		}
 	}
 
-	return nil
+	return checked.err
+}
+
+// checkedWriter remembers the first write error so callers cannot accidentally
+// publish a partially rendered document when a fmt write result is ignored.
+type checkedWriter struct {
+	writer io.Writer
+	err    error
+}
+
+func (w *checkedWriter) Write(p []byte) (int, error) {
+	if w.err != nil {
+		return 0, w.err
+	}
+	n, err := w.writer.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		w.err = err
+	}
+	return n, err
 }
 
 func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *int) error {
@@ -140,7 +161,7 @@ func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *i
 	}
 
 	// Role heading.
-	role := formatRole(rec.Type)
+	role := formatRole(recordRole(rec))
 	fmt.Fprintf(w, "## %s\n\n", role)
 
 	// Timestamp.
@@ -165,8 +186,11 @@ func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *i
 // saveImage decodes a base64 image and saves it to the attachments directory.
 // Returns the relative path for Markdown reference.
 func saveImage(attachmentsDir string, index int, img parser.ImageSource) (string, error) {
-	if err := os.MkdirAll(attachmentsDir, 0o755); err != nil {
+	if err := os.MkdirAll(attachmentsDir, 0o700); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", attachmentsDir, err)
+	}
+	if err := os.Chmod(attachmentsDir, 0o700); err != nil {
+		return "", fmt.Errorf("chmod %s: %w", attachmentsDir, err)
 	}
 
 	ext := ".png"
@@ -187,8 +211,11 @@ func saveImage(attachmentsDir string, index int, img parser.ImageSource) (string
 		return "", fmt.Errorf("decode base64: %w", err)
 	}
 
-	if err := os.WriteFile(filePath, data, 0o644); err != nil {
+	if err := os.WriteFile(filePath, data, 0o600); err != nil {
 		return "", fmt.Errorf("write %s: %w", filePath, err)
+	}
+	if err := os.Chmod(filePath, 0o600); err != nil {
+		return "", fmt.Errorf("chmod %s: %w", filePath, err)
 	}
 
 	// Return relative path for Markdown reference.
