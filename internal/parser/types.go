@@ -17,6 +17,7 @@ type Record struct {
 	Slug       string    `json:"slug,omitempty"`
 	CWD        string    `json:"cwd,omitempty"`
 	Role       string    `json:"-"`
+	Text       string    `json:"-"`
 	Phase      Phase     `json:"-"`
 	Sequence   int       `json:"-"`
 	Provider   Provider  `json:"-"`

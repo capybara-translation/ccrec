@@ -3,6 +3,7 @@ package parser
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -58,9 +59,10 @@ func parseCodexLines(lines []parsedLine) *Result {
 			continue
 		}
 		// Codex rollout policy distinguishes paginated ItemCompleted events
-		// from legacy UserMessage/AgentMessage events. Prefer the paginated
-		// family whenever both appear so the same visible message is not
-		// emitted twice. See codex-rs/rollout/src/policy.rs.
+		// from UserMessage/AgentMessage events used by older rollouts and some
+		// subagent threads. Prefer the paginated family whenever both appear so
+		// the same visible message is not emitted twice. See
+		// codex-rs/rollout/src/policy.rs.
 		if record.Payload.Type == "item_completed" && record.Payload.Item != nil {
 			switch record.Payload.Item.Type {
 			case "UserMessage", "AgentMessage":
@@ -136,7 +138,11 @@ func normalizeCodexResponse(record codexRecord, line int, result *Result) *Recor
 
 	switch record.Payload.Role {
 	case "user":
-		if !contains(record.Payload.Metadata.ContentItemKinds, "user.text") {
+		kinds := record.Payload.Metadata.ContentItemKinds
+		if !slices.Contains(kinds, "user.text") {
+			if allKnownHiddenContentKinds(kinds) {
+				return nil
+			}
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{
 				Line:    line,
 				Message: "skipped Codex user response_item without explicit user.text visibility",
@@ -164,6 +170,7 @@ func newNormalizedRecord(role string, phase Phase, text, timestamp string, line 
 		Phase:    phase,
 		Sequence: line,
 		Provider: ProviderCodex,
+		Text:     text,
 		Message: &Message{
 			Role:    role,
 			Content: content,
@@ -182,20 +189,18 @@ func newNormalizedRecord(role string, phase Phase, text, timestamp string, line 
 }
 
 func textFromCodexContent(content []codexContent, requiredType string) string {
-	parts := make([]string, 0, len(content))
+	var text strings.Builder
 	for _, block := range content {
 		if requiredType != "" && block.Type != requiredType {
 			continue
 		}
-		if text := strings.TrimSpace(block.Text); text != "" {
-			parts = append(parts, text)
-		}
+		text.WriteString(block.Text)
 	}
-	return strings.Join(parts, "\n\n")
+	return text.String()
 }
 
 func textFromCurrentCodexContent(content []codexContent) string {
-	parts := make([]string, 0, len(content))
+	var text strings.Builder
 	for _, block := range content {
 		// Codex 0.145.0 uses "text" for UserMessage and "Text" for
 		// AgentMessage. Do not accept arbitrary blocks merely because they
@@ -203,33 +208,35 @@ func textFromCurrentCodexContent(content []codexContent) string {
 		if block.Type != "text" && block.Type != "Text" {
 			continue
 		}
-		if text := strings.TrimSpace(block.Text); text != "" {
-			parts = append(parts, text)
-		}
+		text.WriteString(block.Text)
 	}
-	return strings.Join(parts, "\n\n")
+	return text.String()
 }
 
 func textFromVisibleUserContent(content []codexContent, kinds []string) string {
-	parts := make([]string, 0, len(content))
+	var text strings.Builder
 	for i, block := range content {
 		if i >= len(kinds) || kinds[i] != "user.text" || block.Type != "input_text" {
 			continue
 		}
-		if text := strings.TrimSpace(block.Text); text != "" {
-			parts = append(parts, text)
-		}
+		text.WriteString(block.Text)
 	}
-	return strings.Join(parts, "\n\n")
+	return text.String()
 }
 
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
+func allKnownHiddenContentKinds(kinds []string) bool {
+	if len(kinds) == 0 {
+		return false
+	}
+	for _, kind := range kinds {
+		if !strings.HasPrefix(kind, "agents_md.") &&
+			!strings.HasPrefix(kind, "environments.") &&
+			!strings.HasPrefix(kind, "plugins.") &&
+			!strings.HasPrefix(kind, "permissions.") {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func firstNonEmpty(values ...string) string {

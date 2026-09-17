@@ -66,7 +66,22 @@ func TestParseFileWithOptions_CodexLegacyFixture(t *testing.T) {
 	}
 }
 
-func TestParseReaderWithOptions_CodexPrefersVisibleEvents(t *testing.T) {
+func TestParseFileWithOptions_CodexSyntheticNegativeBlocksAreNotVisible(t *testing.T) {
+	result, err := ParseFileWithOptions(filepath.Join("testdata", "codex-defensive-negative.jsonl"), ParseOptions{Provider: ProviderCodex, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 2 {
+		t.Fatalf("got %d records, want 2", len(result.Records))
+	}
+	for _, rec := range result.Records {
+		if strings.Contains(rec.Text, "SECRET") {
+			t.Fatalf("synthetic non-visible block leaked: %q", rec.Text)
+		}
+	}
+}
+
+func TestParseReaderWithOptions_CodexPrefersCurrentVisibleEvents(t *testing.T) {
 	input := strings.Join([]string{
 		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-full-id","session_id":"session-full-id"}}`,
 		`{"timestamp":"2026-09-17T00:00:00.500Z","type":"event_msg","payload":{"type":"user_message","message":"legacy duplicate"}}`,
@@ -119,7 +134,7 @@ func TestParseReaderWithOptions_StrictClaudeRejectsUnsupportedOnlyTranscript(t *
 	}
 }
 
-func TestParseReaderWithOptions_CodexResponseFallbackExcludesInjectedContext(t *testing.T) {
+func TestParseReaderWithOptions_CodexResponseFallbackExcludesKnownHiddenContext(t *testing.T) {
 	input := strings.Join([]string{
 		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
 		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"SECRET AGENTS CONTENT"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["agents_md.instructions"]}}}`,
@@ -139,8 +154,53 @@ func TestParseReaderWithOptions_CodexResponseFallbackExcludesInjectedContext(t *
 			t.Fatal("injected context was emitted")
 		}
 	}
-	if len(result.Diagnostics) == 0 {
-		t.Fatal("ambiguous or injected user input should produce a diagnostic")
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("known hidden context should be skipped silently: %#v", result.Diagnostics)
+	}
+}
+
+func TestParseReaderWithOptions_CodexResponseFallbackConcatenatesVisibleChunks(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_text","text":" "},{"type":"input_text","text":"world"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text","user.text","user.text"]}}}`,
+	}, "\n")
+
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 {
+		t.Fatalf("got %d records, want 1", len(result.Records))
+	}
+	if got := result.Records[0].Text; got != "hello world" {
+		t.Fatalf("visible text = %q, want %q", got, "hello world")
+	}
+}
+
+func TestParseReaderWithOptions_CodexKnownHiddenUserMetadataIsSilent(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hidden"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["agents_md.instructions"]}}}`,
+		`{"timestamp":"2026-09-17T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}`,
+	}, "\n")
+
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("known hidden metadata produced diagnostics: %#v", result.Diagnostics)
+	}
+}
+
+func TestParseReaderWithOptions_CodexUnknownUserMetadataIsStrict(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"future data"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["future.visible_kind"]}}}`,
+	}, "\n")
+
+	if _, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true}); err == nil {
+		t.Fatal("unknown user metadata should fail strict parsing")
 	}
 }
 

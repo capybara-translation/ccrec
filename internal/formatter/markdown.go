@@ -78,12 +78,12 @@ func FormatMarkdown(w io.Writer, records []*parser.Record, opts Options) error {
 
 	// Preserve transcript source order. Timestamps are display metadata and may
 	// be missing, equal, or move backwards.
-	sorted := make([]*parser.Record, len(records))
-	copy(sorted, records)
+	visible := make([]*parser.Record, len(records))
+	copy(visible, records)
 
 	// Filter unless --include-all.
 	if !opts.IncludeAll {
-		sorted = FilterRecords(sorted, opts.IncludeToolUse)
+		visible = FilterRecords(visible, opts.IncludeToolUse)
 	}
 
 	// Header.
@@ -92,12 +92,12 @@ func FormatMarkdown(w io.Writer, records []*parser.Record, opts Options) error {
 	if opts.SourcePath != "" {
 		fmt.Fprintf(w, "**File:** `%s`\n", opts.SourcePath)
 	}
-	fmt.Fprintf(w, "**Messages:** %d\n", len(sorted))
+	fmt.Fprintf(w, "**Messages:** %d\n", len(visible))
 	fmt.Fprintln(w)
 
 	// Messages.
 	imageCounter := 0
-	for _, rec := range sorted {
+	for _, rec := range visible {
 		if err := writeMessage(w, rec, opts, &imageCounter); err != nil {
 			return err
 		}
@@ -128,21 +128,17 @@ func (w *checkedWriter) Write(p []byte) (int, error) {
 }
 
 func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *int) error {
-	if rec.Message == nil {
+	if rec.Message == nil && rec.Text == "" {
 		return nil
 	}
 
-	// Extract text.
-	var text string
-	if opts.IncludeToolUse {
-		text = parser.ExtractTextWithToolUse(rec.Message.Content)
-	} else {
-		text = parser.ExtractText(rec.Message.Content)
-	}
+	// Codex records expose normalized visible text directly. Claude records
+	// continue through the legacy content extractor for tool summaries/images.
+	text := recordText(rec, opts.IncludeToolUse)
 
 	// Extract images if enabled.
 	var imagePaths []string
-	if opts.IncludeImages && opts.AttachmentsDir != "" {
+	if rec.Message != nil && opts.IncludeImages && opts.AttachmentsDir != "" {
 		images := parser.ExtractImages(rec.Message.Content)
 		for _, img := range images {
 			*imageCounter++
@@ -165,7 +161,9 @@ func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *i
 	fmt.Fprintf(w, "## %s\n\n", role)
 
 	// Timestamp.
-	fmt.Fprintf(w, "**Time:** %s\n\n", rec.Timestamp.Local().Format("2006-01-02 15:04:05"))
+	if !rec.Timestamp.IsZero() {
+		fmt.Fprintf(w, "**Time:** %s\n\n", rec.Timestamp.Local().Format("2006-01-02 15:04:05"))
+	}
 
 	// Images.
 	for _, p := range imagePaths {

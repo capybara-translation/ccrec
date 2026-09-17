@@ -137,6 +137,17 @@ func TestParseReaderWithOptions_UnknownProviderShapeWarnsUnlessStrict(t *testing
 	}
 }
 
+func TestParseReaderWithOptions_StrictErrorWithoutSourceLineOmitsLineZero(t *testing.T) {
+	input := `{"type":"future-record","payload":{"value":1}}`
+	_, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderAuto, Strict: true})
+	if err == nil {
+		t.Fatal("strict parsing should reject an unknown transcript shape")
+	}
+	if strings.Contains(err.Error(), "line 0") {
+		t.Fatalf("strict error contains synthetic line number: %v", err)
+	}
+}
+
 func TestParseReaderWithOptions_MalformedOnlyWarnsUnlessStrict(t *testing.T) {
 	input := "not json\n"
 	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderAuto})

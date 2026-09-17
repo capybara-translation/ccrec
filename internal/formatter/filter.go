@@ -47,34 +47,47 @@ func shouldInclude(rec *parser.Record, includeToolUse bool) bool {
 		return false
 	}
 
-	if rec.Message == nil {
+	if rec.Message == nil && rec.Text == "" {
 		return false
 	}
 
-	var text string
-	if includeToolUse {
-		text = parser.ExtractTextWithToolUse(rec.Message.Content)
-	} else {
-		text = parser.ExtractText(rec.Message.Content)
-	}
+	text := recordText(rec, includeToolUse)
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return false
 	}
 
-	for _, pat := range excludedPatterns {
-		if strings.Contains(trimmed, pat) {
-			return false
+	// These patterns identify Claude Code control/noise messages. Codex parser
+	// records already contain only explicitly visible text, so applying the
+	// Claude-specific rules would discard legitimate conversation content.
+	if rec.Provider != parser.ProviderCodex {
+		for _, pat := range excludedPatterns {
+			if strings.Contains(trimmed, pat) {
+				return false
+			}
 		}
-	}
 
-	for _, prefix := range excludedPrefixes {
-		if strings.HasPrefix(trimmed, prefix) {
-			return false
+		for _, prefix := range excludedPrefixes {
+			if strings.HasPrefix(trimmed, prefix) {
+				return false
+			}
 		}
 	}
 
 	return true
+}
+
+func recordText(rec *parser.Record, includeToolUse bool) string {
+	if rec.Text != "" {
+		return rec.Text
+	}
+	if rec.Message == nil {
+		return ""
+	}
+	if includeToolUse {
+		return parser.ExtractTextWithToolUse(rec.Message.Content)
+	}
+	return parser.ExtractText(rec.Message.Content)
 }
 
 func recordRole(rec *parser.Record) string {

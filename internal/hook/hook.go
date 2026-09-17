@@ -75,8 +75,7 @@ func Run(args []string) {
 	}
 
 	if input.TranscriptPath == "" {
-		fmt.Fprintf(os.Stderr, "ccrec hook: transcript_path is empty\n")
-		os.Exit(1)
+		return
 	}
 
 	// Skip subagent transcripts.
@@ -140,7 +139,7 @@ func Run(args []string) {
 		return
 	}
 
-	// Build output path: {dir}/{project}/{date}_{session_id_short}.md
+	// Build output path: {dir}/{project}/{date}_{session_id}.md
 	// Use the first non-zero timestamp (skip file-history-snapshot etc.)
 	sessionDate := "unknown"
 	for _, rec := range records {

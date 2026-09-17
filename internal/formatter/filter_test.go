@@ -124,6 +124,30 @@ func TestFilterRecords_PrefixInBodyDoesNotExclude(t *testing.T) {
 	}
 }
 
+func TestFilterRecords_DoesNotApplyClaudeNoiseFiltersToCodexText(t *testing.T) {
+	records := []*parser.Record{
+		{
+			Type:     "user",
+			Role:     "user",
+			Provider: parser.ProviderCodex,
+			Text:     "I keep seeing API Error in the documentation",
+			Message:  &parser.Message{Role: "user", Content: json.RawMessage(`"I keep seeing API Error in the documentation"`)},
+		},
+		{
+			Type:     "assistant",
+			Role:     "assistant",
+			Provider: parser.ProviderCodex,
+			Text:     "<command-name>literal example</command-name>",
+			Message:  &parser.Message{Role: "assistant", Content: json.RawMessage(`"<command-name>literal example</command-name>"`)},
+		},
+	}
+
+	filtered := FilterRecords(records, false)
+	if len(filtered) != len(records) {
+		t.Fatalf("Codex visible text was filtered: got %d records, want %d", len(filtered), len(records))
+	}
+}
+
 func TestFilterRecords_IncludesLocalCommandStdout(t *testing.T) {
 	rec := makeRecord("user", "user", "<local-command-stdout>## Review Summary\\nSome review content</local-command-stdout>")
 	filtered := FilterRecords([]*parser.Record{rec}, false)

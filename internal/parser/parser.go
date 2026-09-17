@@ -117,15 +117,19 @@ func parseReaderWithOptions(r io.Reader, opts ParseOptions) (*Result, error) {
 	if opts.Strict {
 		for _, diagnostic := range result.Diagnostics {
 			if diagnostic.Strict {
-				return nil, fmt.Errorf("strict parsing failed: line %d: %s", diagnostic.Line, diagnostic.Message)
+				return nil, strictDiagnosticError(diagnostic)
 			}
-		}
-		if inputRecords > 0 && result.SupportedMessages == 0 {
-			return nil, fmt.Errorf("strict parsing failed: transcript contained records but no supported messages were found (provider=%s)", provider)
 		}
 	}
 
 	return result, nil
+}
+
+func strictDiagnosticError(diagnostic Diagnostic) error {
+	if diagnostic.Line > 0 {
+		return fmt.Errorf("strict parsing failed: line %d: %s", diagnostic.Line, diagnostic.Message)
+	}
+	return fmt.Errorf("strict parsing failed: %s", diagnostic.Message)
 }
 
 func readLines(r io.Reader) ([]parsedLine, []Diagnostic, int, error) {

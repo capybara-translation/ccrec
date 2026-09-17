@@ -143,4 +143,5 @@ tmp/
 bin/
 .idea/
 .claude/settings.local.json
+# Local superpowers planning documents; intentionally not tracked.
 docs/superpowers/

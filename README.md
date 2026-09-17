@@ -83,6 +83,10 @@ Codex commonly stores local session transcripts under:
 
 Codex exposes `transcript_path` to hooks. Its transcript JSON format is not a stable hook interface, so ccrec uses conservative parsing and regression fixtures for supported formats.
 
+For Codex, ccrec selects exactly one visible-message source family to avoid duplicates: current `item_completed` events first, legacy or subagent `user_message` / `agent_message` events second, and `response_item` records only as a fallback. In the fallback path, user content is exported only when metadata explicitly marks it as `user.text`; older transcripts without that visibility metadata cannot safely reconstruct those user messages. Injected instructions, environment data, plugin metadata, permissions, reasoning, and tool output are not exported as conversation text.
+
+Session IDs are selected in this order: hook input, Codex session metadata, transcript filename, then a stable path-derived fallback. Unsafe filename characters are normalized and hashed.
+
 ### Example output
 
 ```markdown
@@ -110,11 +114,18 @@ entities (nodes) and relationships (edges)...
 | Flag | Description |
 |------|-------------|
 | `-o <path>` | Write output to a file instead of stdout |
-| `-tools`    | Include tool use summaries in the output |
+| `-tools`    | Include Claude Code tool use summaries in the output (no effect for Codex) |
 | `-all`      | Disable filtering; include all messages  |
 | `-images`   | Extract and embed images (requires `-o`)  |
 | `-provider <name>` | Input provider: `auto`, `claude`, or `codex` |
 | `-strict` | Fail if messages cannot be extracted safely |
+
+When `-o` is used, ccrec writes a complete same-directory temporary file and atomically replaces the destination with mode `0600`; directories it creates use `0700`. A destination symlink is replaced rather than followed, so its target is unchanged. Concurrent writers publish one complete result, but the last rename wins. A process killed before cleanup may leave a `.tmp-*` file, and the containing directory is not fsynced.
+
+## Breaking changes in Codex support
+
+- Conversation order now follows JSONL source order for both providers. Sessions whose timestamps move backwards can differ from older ccrec output; equal timestamps previously did not guarantee source order.
+- Hook output names now use the complete collision-resistant session ID instead of the first eight characters. Existing short-ID files remain untouched, so an in-progress session spanning the upgrade can leave both names; rename or remove the older file manually if desired.
 
 ## Claude Code Hook Integration
 
@@ -123,6 +134,7 @@ ccrec can run as a [Claude Code hook](https://docs.anthropic.com/en/docs/claude-
 ```bash
 ccrec hook -dir <output-directory>
 ccrec hook -base ~/repos -dir <output-directory>
+ccrec hook -project my-app -dir <output-directory>
 ```
 
 The `hook` subcommand:
@@ -133,6 +145,8 @@ The `hook` subcommand:
 4. Saves it as `<output-directory>/<project-name>/<date>_<session-id>.md`
 
 The project directory is determined from the `CLAUDE_PROJECT_DIR` environment variable (set automatically by Claude Code), falling back to cwd. With `-base`, the project name is the relative path from the base to the project directory. For example, if the project directory is `~/repos/my-app/backend` and base is `~/repos`, the project name becomes `my-app/backend`. Without `-base`, only the directory basename is used (e.g., `backend`).
+
+`-project` supplies an explicit safe relative project path and takes precedence over automatic project-name derivation. The hook also accepts `-provider`, `-strict`, `-tools`, `-all`, and `-images`; `-tools` is Claude Code-specific and has no effect on Codex transcripts.
 
 ### Setup
 
@@ -174,7 +188,7 @@ Replace the placeholders: `/path/to/ccrec` with the actual binary path, `<your-r
 - With `-base`, project name is the relative path from base to the project directory (e.g., `my-app/backend`)
 - Without `-base`, project name is the project directory basename (e.g., `backend`)
 - Date is derived from the first message timestamp (stable across midnight)
-- Session ID is the first 8 characters of the transcript filename
+- Session ID is the full sanitized hook ID, transcript metadata ID, or filename-derived ID (in that order)
 - Overwrites the same file on every invocation within a session
 - Skips subagent transcripts (only saves the main conversation)
 - Skips execution when `stop_hook_active` is true (prevents infinite loops)
@@ -205,7 +219,7 @@ Add the following to `~/.codex/hooks.json`, replacing the executable, repository
 }
 ```
 
-New or changed non-managed hooks must be reviewed and trusted before Codex runs them. Open `/hooks` in Codex to review the definition. The hook uses the supplied `session_id`, `transcript_path`, and `cwd`, writes the Markdown atomically, and defaults transcript files to owner-only permissions.
+New or changed non-managed hooks must be reviewed and trusted before Codex runs them. Open `/hooks` in Codex to review the definition. The hook uses the supplied `session_id`, `transcript_path`, and `cwd`, writes the Markdown atomically, and uses owner-only permissions (`0600` files and `0700` directories). A null, empty, or missing transcript path is treated as a successful no-op.
 
 ## Testing
 

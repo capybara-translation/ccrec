@@ -408,7 +408,7 @@ func TestRunIntegration_SkipsEmptyOutput(t *testing.T) {
 	}
 }
 
-func TestRunIntegration_SkipsMissingTranscript(t *testing.T) {
+func TestRunIntegration_SkipsUnavailableTranscript(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -420,38 +420,106 @@ func TestRunIntegration_SkipsMissingTranscript(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, out)
 	}
 
-	// With --no-session-persistence, Claude Code passes a transcript_path
-	// that was never written. The hook must exit 0 silently (issue #1).
-	outDir := t.TempDir()
-	transcriptPath := filepath.Join(t.TempDir(), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
-
-	input := HookInput{
-		TranscriptPath: transcriptPath,
-		CWD:            "/Users/junya/repos/test-project",
+	missingPath := filepath.Join(t.TempDir(), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
+	tests := []struct {
+		name  string
+		stdin string
+	}{
+		{name: "null transcript path", stdin: `{"transcript_path":null,"cwd":"/Users/junya/repos/test-project"}`},
+		{name: "empty transcript path", stdin: `{"transcript_path":"","cwd":"/Users/junya/repos/test-project"}`},
+		{name: "missing transcript path", stdin: `{"transcript_path":"` + missingPath + `","cwd":"/Users/junya/repos/test-project"}`},
 	}
-	stdinBytes, _ := json.Marshal(input)
 
-	cmd := exec.Command(binPath, "hook", "-dir", outDir)
-	cmd.Stdin = strings.NewReader(string(stdinBytes))
-	env := []string{}
-	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "CLAUDE_PROJECT_DIR=") {
-			env = append(env, e)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			cmd := exec.Command(binPath, "hook", "-dir", outDir)
+			cmd.Stdin = strings.NewReader(tt.stdin)
+			env := []string{}
+			for _, e := range os.Environ() {
+				if !strings.HasPrefix(e, "CLAUDE_PROJECT_DIR=") {
+					env = append(env, e)
+				}
+			}
+			cmd.Env = env
+
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Errorf("hook should exit 0, got: %v\n%s", err, out)
+			}
+			if len(out) != 0 {
+				t.Errorf("hook should produce no output, got: %s", out)
+			}
+			entries, _ := os.ReadDir(outDir)
+			if len(entries) != 0 {
+				t.Errorf("hook should create no files, found %d entries in %s", len(entries), outDir)
+			}
+		})
 	}
-	cmd.Env = env
+}
 
-	out, err := cmd.CombinedOutput()
+func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHookSessionID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	binPath := filepath.Join(t.TempDir(), "ccrec")
+	build := exec.Command("go", "build", "-o", binPath, "../../cmd/ccrec")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	fixture, err := os.ReadFile(filepath.Join("..", "parser", "testdata", "codex-0.145.0.jsonl"))
 	if err != nil {
-		t.Errorf("hook should exit 0 for missing transcript, got: %v\n%s", err, out)
+		t.Fatal(err)
 	}
-	if len(out) != 0 {
-		t.Errorf("hook should produce no output for missing transcript, got: %s", out)
+	transcriptPath := filepath.Join(t.TempDir(), "rollout-2026-09-17T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
+	if err := os.WriteFile(transcriptPath, fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outDir := t.TempDir()
+	input := HookInput{
+		SessionID:      "hook-session-id",
+		TranscriptPath: transcriptPath,
+		CWD:            "/workspace/example",
+		HookEventName:  "SessionEnd",
+		Model:          "gpt-test",
+	}
+	stdinBytes, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	entries, _ := os.ReadDir(outDir)
-	if len(entries) != 0 {
-		t.Errorf("hook should create no files for missing transcript, found %d entries in %s", len(entries), outDir)
+	run := func() []byte {
+		t.Helper()
+		cmd := exec.Command(binPath, "hook", "-provider", "codex", "-project", "codex-project", "-dir", outDir)
+		cmd.Stdin = strings.NewReader(string(stdinBytes))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Codex hook failed: %v\n%s", err, out)
+		}
+		path := filepath.Join(outDir, "codex-project", "2026-09-17_hook-session-id.md")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read output: %v", err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("output mode = %o, want 600", got)
+		}
+		return data
+	}
+
+	first := run()
+	second := run()
+	if string(first) != string(second) {
+		t.Fatal("running the same Codex SessionEnd hook twice changed the output")
+	}
+	if !strings.Contains(string(second), "fixture prompt") || !strings.Contains(string(second), "fixture answer") {
+		t.Fatalf("Codex messages missing from output:\n%s", second)
 	}
 }
 

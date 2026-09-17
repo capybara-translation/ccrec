@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,25 @@ func TestFormatMarkdown_BasicOutput(t *testing.T) {
 	}
 }
 
+func TestFormatMarkdown_CodexFixtureGolden(t *testing.T) {
+	result, err := parser.ParseFileWithOptions(filepath.Join("..", "parser", "testdata", "codex-0.145.0.jsonl"), parser.ParseOptions{Provider: parser.ProviderCodex, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := FormatMarkdown(&buf, result.Records, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	actual := regexp.MustCompile(`\*\*Time:\*\* [^\n]+`).ReplaceAllString(buf.String(), "**Time:** <TIME>")
+	want, err := os.ReadFile(filepath.Join("testdata", "codex-0.145.0.golden.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual != string(want) {
+		t.Fatalf("Codex Markdown differs from golden\n--- actual ---\n%s\n--- want ---\n%s", actual, want)
+	}
+}
+
 func TestFormatMarkdown_PreservesSourceOrder(t *testing.T) {
 	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	// The source order is authoritative even when timestamps move backwards.
@@ -92,6 +112,61 @@ func TestFormatMarkdown_PreservesSourceOrder(t *testing.T) {
 	userIdx := strings.Index(output, "## User")
 	if assistantIdx > userIdx {
 		t.Error("formatter should preserve source order instead of sorting by timestamp")
+	}
+}
+
+func TestFormatMarkdown_PreservesSourceOrderForConsecutiveUserMessages(t *testing.T) {
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	records := []*parser.Record{
+		makeRecord("user", "user", "first user message"),
+		makeRecord("user", "user", "second user message"),
+	}
+	records[0].Timestamp = ts
+	records[1].Timestamp = ts.Add(-time.Second)
+
+	var buf bytes.Buffer
+	if err := FormatMarkdown(&buf, records, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	output := buf.String()
+	if strings.Index(output, "first user message") > strings.Index(output, "second user message") {
+		t.Fatal("formatter reordered consecutive user messages by timestamp")
+	}
+}
+
+func TestFormatMarkdown_CodexUsesNormalizedVisibleText(t *testing.T) {
+	records := []*parser.Record{
+		{
+			Role:     "assistant",
+			Provider: parser.ProviderCodex,
+			Text:     "<command-name>literal</command-name> and API Error",
+			Message:  &parser.Message{Role: "assistant", Content: json.RawMessage(`"different legacy content"`)},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := FormatMarkdown(&buf, records, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "<command-name>literal</command-name> and API Error") {
+		t.Fatalf("normalized Codex text missing:\n%s", output)
+	}
+	if strings.Contains(output, "different legacy content") {
+		t.Fatalf("formatter ignored normalized Codex text:\n%s", output)
+	}
+}
+
+func TestFormatMarkdown_OmitsZeroTimestamp(t *testing.T) {
+	record := makeRecord("user", "user", "no timestamp")
+	record.Timestamp = time.Time{}
+
+	var buf bytes.Buffer
+	if err := FormatMarkdown(&buf, []*parser.Record{record}, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "**Time:**") || strings.Contains(buf.String(), "0001-01-01") {
+		t.Fatalf("zero timestamp should be omitted:\n%s", buf.String())
 	}
 }
 
