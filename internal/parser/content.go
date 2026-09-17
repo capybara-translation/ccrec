@@ -37,7 +37,7 @@ func ExtractText(content json.RawMessage) string {
 			if t := strings.TrimSpace(stripSystemTags(b.Text)); t != "" {
 				parts = append(parts, t)
 			}
-		// Skip: thinking, tool_use, tool_result
+			// Skip: thinking, tool_use, tool_result
 		}
 	}
 
@@ -71,7 +71,7 @@ func ExtractTextWithToolUse(content json.RawMessage) string {
 			parts = append(parts, formatToolUse(b))
 		case "tool_result":
 			// Tool results are in user messages; skip for brevity.
-		// Skip: thinking
+			// Skip: thinking
 		}
 	}
 
