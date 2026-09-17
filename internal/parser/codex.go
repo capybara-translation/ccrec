@@ -57,6 +57,10 @@ func parseCodexLines(lines []parsedLine) *Result {
 		if record.Type != "event_msg" {
 			continue
 		}
+		// Codex rollout policy distinguishes paginated ItemCompleted events
+		// from legacy UserMessage/AgentMessage events. Prefer the paginated
+		// family whenever both appear so the same visible message is not
+		// emitted twice. See codex-rs/rollout/src/policy.rs.
 		if record.Payload.Type == "item_completed" && record.Payload.Item != nil {
 			switch record.Payload.Item.Type {
 			case "UserMessage", "AgentMessage":

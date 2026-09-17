@@ -41,14 +41,41 @@ func TestParseFileWithOptions_CodexFixture(t *testing.T) {
 	}
 }
 
+func TestParseFileWithOptions_CodexLegacyFixture(t *testing.T) {
+	result, err := ParseFileWithOptions(filepath.Join("testdata", "codex-0.129.0-legacy.jsonl"), ParseOptions{Provider: ProviderCodex, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wants := []struct {
+		role  string
+		phase Phase
+		text  string
+	}{
+		{role: "user", text: "legacy prompt"},
+		{role: "assistant", phase: PhaseFinal, text: "legacy answer"},
+	}
+	if len(result.Records) != len(wants) {
+		t.Fatalf("got %d records, want %d", len(result.Records), len(wants))
+	}
+	for i, want := range wants {
+		got := result.Records[i]
+		if text := ExtractText(got.Message.Content); got.Role != want.role || got.Phase != want.phase || text != want.text {
+			t.Errorf("record %d = (%q, %q, %q), want (%q, %q, %q)", i, got.Role, got.Phase, text, want.role, want.phase, want.text)
+		}
+	}
+}
+
 func TestParseReaderWithOptions_CodexPrefersVisibleEvents(t *testing.T) {
 	input := strings.Join([]string{
 		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-full-id","session_id":"session-full-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:00.500Z","type":"event_msg","payload":{"type":"user_message","message":"legacy duplicate"}}`,
 		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]}}}`,
 		`{"timestamp":"2026-09-17T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"reasoning","text":"SECRET reasoning"},{"type":"text","text":"hello"},{"type":"tool_output","text":"SECRET tool output"}]}}}`,
 		`{"timestamp":"2026-09-17T00:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"working"}]}}`,
 		`{"timestamp":"2026-09-17T00:00:04Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","phase":"commentary","content":[{"type":"unknown","text":"SECRET unknown"},{"type":"Text","text":"working"}]}}}`,
 		`{"timestamp":"2026-09-17T00:00:05Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","phase":"final_answer","content":[{"type":"Text","text":"done"}]}}}`,
+		`{"timestamp":"2026-09-17T00:00:06Z","type":"event_msg","payload":{"type":"agent_message","message":"legacy duplicate","phase":"final_answer"}}`,
 	}, "\n")
 
 	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderAuto})
