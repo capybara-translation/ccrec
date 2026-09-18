@@ -198,19 +198,31 @@ Replace the placeholders: `/path/to/ccrec` with the actual binary path, `<your-r
 
 ## Codex Hook Integration
 
-For final session archives, use Codex `SessionEnd`. It runs for the main thread when a session ends and has a maximum command timeout of three seconds. The initial Codex setup intentionally omits `-images` to reduce work within that limit. Add `-images` to the command if image export is needed, then verify the hook still completes within the timeout for your transcript sizes.
+ccrec can run from Codex `Stop`, `SessionEnd`, or both. `Stop` updates the same conversation file after every response, while `SessionEnd` updates it when the main thread ends. Repeated invocations are safe because ccrec atomically overwrites the file for the same session.
 
 Add the following to `~/.codex/hooks.json`, replacing the executable, repository root, and output paths with absolute paths:
 
 ```json
 {
   "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/ccrec hook -provider codex -images -base /Users/you/repos -dir /Users/you/Documents/conversations",
+            "timeout": 30,
+            "statusMessage": "Saving conversation log"
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/ccrec hook -provider codex -base /Users/you/repos -dir /Users/you/Documents/conversations",
+            "command": "/path/to/ccrec hook -provider codex -images -base /Users/you/repos -dir /Users/you/Documents/conversations",
             "timeout": 3,
             "statusMessage": "Saving conversation log"
           }
@@ -221,7 +233,7 @@ Add the following to `~/.codex/hooks.json`, replacing the executable, repository
 }
 ```
 
-Replace `/path/to/ccrec` with the absolute path to the installed binary. The example repository and output paths must also be replaced with absolute paths for your environment.
+Replace `/path/to/ccrec` with the absolute path to the installed binary. The example repository and output paths must also be replaced with absolute paths for your environment. You may configure either event instead of both. Codex limits `SessionEnd` command hooks to three seconds, so verify that image extraction completes within that limit for your transcript sizes; remove `-images` from that event if necessary.
 
 New or changed non-managed hooks must be reviewed and trusted before Codex runs them. Open `/hooks` in Codex to review the definition. The hook uses the supplied `session_id`, `transcript_path`, and `cwd`, writes the Markdown atomically, and uses owner-only permissions (`0600` files and `0700` directories). A null, empty, or missing transcript path is treated as a successful no-op.
 
