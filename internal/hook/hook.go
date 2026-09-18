@@ -1,25 +1,34 @@
 package hook
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/capybara-translation/ccrec/internal/formatter"
 	"github.com/capybara-translation/ccrec/internal/parser"
+	"github.com/capybara-translation/ccrec/internal/safefile"
 )
 
-// HookInput represents the JSON passed via stdin from Claude Code hooks.
+// HookInput represents the JSON passed via stdin from Claude Code or Codex hooks.
 type HookInput struct {
 	SessionID      string `json:"session_id"`
 	TranscriptPath string `json:"transcript_path"`
 	StopHookActive bool   `json:"stop_hook_active"`
 	CWD            string `json:"cwd"`
+	// Official hook input fields retained for future event/model-specific behavior.
+	HookEventName string `json:"hook_event_name"`
+	Model         string `json:"model"`
 }
+
+var uuidPattern = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 
 // Run executes the hook subcommand.
 func Run(args []string) {
@@ -29,9 +38,12 @@ func Run(args []string) {
 	tools := fs.Bool("tools", false, "Include tool use summaries")
 	all := fs.Bool("all", false, "Disable filtering (include all messages)")
 	images := fs.Bool("images", false, "Extract and embed images")
+	providerName := fs.String("provider", "auto", "Transcript provider: auto, claude, or codex")
+	strict := fs.Bool("strict", false, "Fail when supported messages cannot be extracted safely")
+	project := fs.String("project", "", "Explicit project name or relative project path")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: ccrec hook [-base <base-path>] -dir <output-directory>\n\n")
-		fmt.Fprintf(os.Stderr, "Run as a Claude Code hook. Reads hook JSON from stdin,\n")
+		fmt.Fprintf(os.Stderr, "Run as a Claude Code or Codex hook. Reads hook JSON from stdin,\n")
 		fmt.Fprintf(os.Stderr, "converts the transcript to Markdown, and saves to the output directory.\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fs.PrintDefaults()
@@ -40,6 +52,11 @@ func Run(args []string) {
 
 	if *dir == "" {
 		fs.Usage()
+		os.Exit(1)
+	}
+	provider, err := parser.ParseProvider(*providerName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ccrec hook: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -59,8 +76,7 @@ func Run(args []string) {
 	}
 
 	if input.TranscriptPath == "" {
-		fmt.Fprintf(os.Stderr, "ccrec hook: transcript_path is empty\n")
-		os.Exit(1)
+		return
 	}
 
 	// Skip subagent transcripts.
@@ -78,7 +94,15 @@ func Run(args []string) {
 	if *base != "" {
 		basePath = expandHome(*base)
 	}
-	projectName := deriveProjectName(projectDir, basePath, input.TranscriptPath)
+	projectName := *project
+	if projectName == "" {
+		projectName = deriveProjectName(projectDir, basePath, input.TranscriptPath)
+	}
+	projectName, err = safeProjectPath(projectName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ccrec hook: invalid project name: %v\n", err)
+		os.Exit(1)
+	}
 	if projectName == "" {
 		fmt.Fprintf(os.Stderr, "ccrec hook: could not determine project name from CLAUDE_PROJECT_DIR=%q cwd=%q transcript=%q\n", claudeProjectDir, input.CWD, input.TranscriptPath)
 		os.Exit(1)
@@ -87,7 +111,7 @@ func Run(args []string) {
 	// Parse transcript. A missing file is not an error: with
 	// --no-session-persistence, Claude Code passes a transcript_path
 	// that was never written.
-	records, err := parser.ParseFile(input.TranscriptPath)
+	result, err := parser.ParseFileWithOptions(input.TranscriptPath, parser.ParseOptions{Provider: provider, Strict: *strict, Images: *images})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return
@@ -95,6 +119,14 @@ func Run(args []string) {
 		fmt.Fprintf(os.Stderr, "ccrec hook: parse error: %v\n", err)
 		os.Exit(1)
 	}
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Line > 0 {
+			fmt.Fprintf(os.Stderr, "ccrec hook: warning: line %d: %s\n", diagnostic.Line, diagnostic.Message)
+		} else {
+			fmt.Fprintf(os.Stderr, "ccrec hook: warning: %s\n", diagnostic.Message)
+		}
+	}
+	records := result.Records
 
 	if len(records) == 0 {
 		return
@@ -104,11 +136,11 @@ func Run(args []string) {
 	// creating empty Markdown files and directories. Note: FormatMarkdown
 	// applies the same filter internally; the duplication is intentional
 	// to prevent file-system side effects before they happen.
-	if !*all && len(formatter.FilterRecords(records, *tools)) == 0 {
+	if !*all && len(formatter.FilterRecordsWithImages(records, *tools, *images)) == 0 {
 		return
 	}
 
-	// Build output path: {dir}/{project}/{date}_{session_id_short}.md
+	// Build output path: {dir}/{project}/{date}_{session_id}.md
 	// Use the first non-zero timestamp (skip file-history-snapshot etc.)
 	sessionDate := "unknown"
 	for _, rec := range records {
@@ -117,24 +149,17 @@ func Run(args []string) {
 			break
 		}
 	}
-	sessionID := extractSessionID(input.TranscriptPath)
+	sessionID := resolveSessionID(input.SessionID, result.SessionID, input.TranscriptPath, result.Provider)
 	baseName := sessionDate + "_" + sessionID
 	fileName := baseName + ".md"
 
 	outProjectDir := filepath.Join(outDir, projectName)
-	if err := os.MkdirAll(outProjectDir, 0o755); err != nil {
+	if err := os.MkdirAll(outProjectDir, 0o700); err != nil {
 		fmt.Fprintf(os.Stderr, "ccrec hook: mkdir %s: %v\n", outProjectDir, err)
 		os.Exit(1)
 	}
 
 	outPath := filepath.Join(outProjectDir, fileName)
-	f, err := os.Create(outPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ccrec hook: create %s: %v\n", outPath, err)
-		os.Exit(1)
-	}
-	defer f.Close()
-
 	opts := formatter.Options{
 		SourcePath:     input.TranscriptPath,
 		IncludeToolUse: *tools,
@@ -142,7 +167,9 @@ func Run(args []string) {
 		IncludeImages:  *images,
 		AttachmentsDir: filepath.Join(outProjectDir, "attachments_"+baseName),
 	}
-	if err := formatter.FormatMarkdown(f, records, opts); err != nil {
+	if err := safefile.Write(outPath, 0o600, func(w io.Writer) error {
+		return formatter.FormatMarkdown(w, records, opts)
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "ccrec hook: format error: %v\n", err)
 		os.Exit(1)
 	}
@@ -201,18 +228,76 @@ func ExtractProjectName(transcriptPath string) string {
 	return ""
 }
 
-// extractSessionID extracts a short session ID from the transcript file name.
-// e.g., "42bb222a-a575-4386-bae8-2b0ce9a93d40.jsonl" → "42bb222a"
+// extractSessionID extracts a collision-resistant session ID from the
+// transcript file name. Codex rollout prefixes are removed, while ordinary
+// basenames are preserved in full.
 func extractSessionID(transcriptPath string) string {
 	base := filepath.Base(transcriptPath)
 	base = strings.TrimSuffix(base, filepath.Ext(base))
-	if idx := strings.Index(base, "-"); idx > 0 {
-		return base[:idx]
-	}
-	if len(base) > 8 {
-		return base[:8]
+	if strings.HasPrefix(base, "rollout-") {
+		matches := uuidPattern.FindAllString(base, -1)
+		if len(matches) > 0 {
+			return matches[len(matches)-1]
+		}
 	}
 	return base
+}
+
+func resolveSessionID(hookID, metadataID, transcriptPath string, provider parser.Provider) string {
+	for _, candidate := range []string{hookID, metadataID} {
+		if sanitized := sanitizeSessionToken(candidate); sanitized != "" {
+			return sanitized
+		}
+	}
+	if sanitized := sanitizeSessionToken(extractSessionID(transcriptPath)); sanitized != "" {
+		return sanitized
+	}
+	canonical, err := filepath.Abs(transcriptPath)
+	if err != nil {
+		canonical = transcriptPath
+	}
+	digest := sha256.Sum256([]byte(string(provider) + "\x00" + canonical))
+	return fmt.Sprintf("session-%x", digest[:8])
+}
+
+func sanitizeSessionToken(value string) string {
+	if value == "" {
+		return ""
+	}
+	original := value
+	var b strings.Builder
+	lastSeparator := false
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {
+			b.WriteRune(r)
+			lastSeparator = false
+			continue
+		}
+		if !lastSeparator {
+			b.WriteByte('-')
+			lastSeparator = true
+		}
+	}
+	value = strings.Trim(b.String(), ".-_")
+	digest := sha256.Sum256([]byte(original))
+	if value == "" {
+		return fmt.Sprintf("session-%x", digest[:8])
+	}
+	if value == original && len(value) <= 128 {
+		return value
+	}
+	if len(value) > 111 {
+		value = value[:111]
+	}
+	return fmt.Sprintf("%s-%x", value, digest[:8])
+}
+
+func safeProjectPath(value string) (string, error) {
+	clean := filepath.Clean(value)
+	if clean == "." || clean == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("unsafe relative path %q", value)
+	}
+	return clean, nil
 }
 
 func expandHome(path string) string {

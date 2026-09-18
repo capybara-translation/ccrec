@@ -5,9 +5,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/capybara-translation/ccrec/internal/parser"
 )
+
+const hookTinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
 func TestExtractProjectName(t *testing.T) {
 	tests := []struct {
@@ -131,9 +136,14 @@ func TestExtractSessionID(t *testing.T) {
 		want string
 	}{
 		{
+			name: "Codex rollout filename",
+			path: "/path/to/rollout-2026-09-17T18-22-44-01a0aeac-efdc-7e71-869a-157d6c25761c.jsonl",
+			want: "01a0aeac-efdc-7e71-869a-157d6c25761c",
+		},
+		{
 			name: "standard UUID filename",
 			path: "/path/to/42bb222a-a575-4386-bae8-2b0ce9a93d40.jsonl",
-			want: "42bb222a",
+			want: "42bb222a-a575-4386-bae8-2b0ce9a93d40",
 		},
 		{
 			name: "short filename",
@@ -143,7 +153,7 @@ func TestExtractSessionID(t *testing.T) {
 		{
 			name: "no hyphens long name",
 			path: "/path/to/abcdefghijklmnop.jsonl",
-			want: "abcdefgh",
+			want: "abcdefghijklmnop",
 		},
 	}
 
@@ -154,6 +164,36 @@ func TestExtractSessionID(t *testing.T) {
 				t.Errorf("extractSessionID(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveSessionID_FilenameFallbackDoesNotCollideOnSharedPrefix(t *testing.T) {
+	first := resolveSessionID("", "", "/tmp/42bb222a-a575-4386-bae8-2b0ce9a93d40.jsonl", parser.ProviderClaude)
+	second := resolveSessionID("", "", "/tmp/42bb222a-1111-2222-3333-444444444444.jsonl", parser.ProviderClaude)
+	if first == second {
+		t.Fatalf("distinct transcript filenames collided at %q", first)
+	}
+}
+
+func TestResolveSessionID_PrefersHookInputAndSanitizesIt(t *testing.T) {
+	got := resolveSessionID("../hook/session id", "metadata-id", "/tmp/rollout-2026-09-17T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl", parser.ProviderCodex)
+	if !strings.HasPrefix(got, "hook-session-id-") || strings.ContainsAny(got, "/ ") {
+		t.Fatalf("resolved session ID = %q, want a safe hashed hook-session-id token", got)
+	}
+}
+
+func TestSanitizeSessionToken_DifferentUnsafeIDsDoNotCollide(t *testing.T) {
+	withSlash := sanitizeSessionToken("a/b")
+	withSpace := sanitizeSessionToken("a b")
+	if withSlash == withSpace {
+		t.Fatalf("different unsafe IDs collided at %q", withSlash)
+	}
+}
+
+func TestResolveSessionID_UsesCodexMetadataBeforeFilename(t *testing.T) {
+	got := resolveSessionID("", "metadata-full-id", "/tmp/rollout-2026-09-17T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl", parser.ProviderCodex)
+	if got != "metadata-full-id" {
+		t.Fatalf("resolved session ID = %q, want metadata-full-id", got)
 	}
 }
 
@@ -287,6 +327,9 @@ func TestRunIntegration_SkipsEmptyOutput(t *testing.T) {
 	// Transcript with only tool_use (no text) — filtered out without --tools.
 	toolOnlyContent := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/test.go"}}]},"timestamp":"2026-01-15T10:00:00Z"}
 `
+	invalidCodexImageOnlyContent := `{"type":"session_meta","payload":{"id":"session-id"}}
+{"timestamp":"2026-01-15T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,bm90IGFuIGltYWdl"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.image"],"turn_id":"turn-1"}}}
+`
 
 	tests := []struct {
 		name       string
@@ -315,6 +358,12 @@ func TestRunIntegration_SkipsEmptyOutput(t *testing.T) {
 			transcript: metaOnlyContent,
 			extraArgs:  []string{"-all"},
 			wantFile:   true,
+		},
+		{
+			name:       "invalid Codex image-only transcript produces no output",
+			transcript: invalidCodexImageOnlyContent,
+			extraArgs:  []string{"-provider", "codex", "-images"},
+			wantFile:   false,
 		},
 	}
 
@@ -371,7 +420,7 @@ func TestRunIntegration_SkipsEmptyOutput(t *testing.T) {
 	}
 }
 
-func TestRunIntegration_SkipsMissingTranscript(t *testing.T) {
+func TestRunIntegration_SkipsUnavailableTranscript(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -383,38 +432,139 @@ func TestRunIntegration_SkipsMissingTranscript(t *testing.T) {
 		t.Fatalf("build failed: %v\n%s", err, out)
 	}
 
-	// With --no-session-persistence, Claude Code passes a transcript_path
-	// that was never written. The hook must exit 0 silently (issue #1).
-	outDir := t.TempDir()
-	transcriptPath := filepath.Join(t.TempDir(), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
-
-	input := HookInput{
-		TranscriptPath: transcriptPath,
-		CWD:            "/Users/junya/repos/test-project",
+	missingPath := filepath.Join(t.TempDir(), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
+	tests := []struct {
+		name  string
+		stdin string
+	}{
+		{name: "null transcript path", stdin: `{"transcript_path":null,"cwd":"/Users/junya/repos/test-project"}`},
+		{name: "empty transcript path", stdin: `{"transcript_path":"","cwd":"/Users/junya/repos/test-project"}`},
+		{name: "missing transcript path", stdin: `{"transcript_path":"` + missingPath + `","cwd":"/Users/junya/repos/test-project"}`},
 	}
-	stdinBytes, _ := json.Marshal(input)
 
-	cmd := exec.Command(binPath, "hook", "-dir", outDir)
-	cmd.Stdin = strings.NewReader(string(stdinBytes))
-	env := []string{}
-	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "CLAUDE_PROJECT_DIR=") {
-			env = append(env, e)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			cmd := exec.Command(binPath, "hook", "-dir", outDir)
+			cmd.Stdin = strings.NewReader(tt.stdin)
+			env := []string{}
+			for _, e := range os.Environ() {
+				if !strings.HasPrefix(e, "CLAUDE_PROJECT_DIR=") {
+					env = append(env, e)
+				}
+			}
+			cmd.Env = env
+
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Errorf("hook should exit 0, got: %v\n%s", err, out)
+			}
+			if len(out) != 0 {
+				t.Errorf("hook should produce no output, got: %s", out)
+			}
+			entries, _ := os.ReadDir(outDir)
+			if len(entries) != 0 {
+				t.Errorf("hook should create no files, found %d entries in %s", len(entries), outDir)
+			}
+		})
 	}
-	cmd.Env = env
+}
 
-	out, err := cmd.CombinedOutput()
+func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHookSessionID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	binPath := filepath.Join(t.TempDir(), "ccrec")
+	build := exec.Command("go", "build", "-o", binPath, "../../cmd/ccrec")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	fixture, err := os.ReadFile(filepath.Join("..", "parser", "testdata", "codex-0.145.0.jsonl"))
 	if err != nil {
-		t.Errorf("hook should exit 0 for missing transcript, got: %v\n%s", err, out)
+		t.Fatal(err)
 	}
-	if len(out) != 0 {
-		t.Errorf("hook should produce no output for missing transcript, got: %s", out)
+	fixture = append(fixture, []byte(`{"timestamp":"2026-09-17T12:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"image prompt"},{"type":"input_image","image_url":"data:image/png;base64,`+hookTinyPNGBase64+`"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text","user.image"],"turn_id":"image-turn"}}}
+{"timestamp":"2026-09-17T12:00:04Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"image-turn","item":{"type":"UserMessage","content":[{"type":"text","text":"image prompt"},{"type":"local_image","path":"/must/not/be/read.png"}]}}}
+`)...)
+	transcriptPath := filepath.Join(t.TempDir(), "rollout-2026-09-17T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
+	if err := os.WriteFile(transcriptPath, fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outDir := t.TempDir()
+	input := HookInput{
+		SessionID:      "hook-session-id",
+		TranscriptPath: transcriptPath,
+		CWD:            "/workspace/example",
+		HookEventName:  "SessionEnd",
+		Model:          "gpt-test",
+	}
+	stdinBytes, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	entries, _ := os.ReadDir(outDir)
-	if len(entries) != 0 {
-		t.Errorf("hook should create no files for missing transcript, found %d entries in %s", len(entries), outDir)
+	run := func() []byte {
+		t.Helper()
+		cmd := exec.Command(binPath, "hook", "-provider", "codex", "-project", "codex-project", "-images", "-dir", outDir)
+		cmd.Stdin = strings.NewReader(string(stdinBytes))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Codex hook failed: %v\n%s", err, out)
+		}
+		path := filepath.Join(outDir, "codex-project", "2026-09-17_hook-session-id.md")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read output: %v", err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("output mode = %o, want 600", got)
+		}
+		return data
+	}
+
+	first := run()
+	second := run()
+	if string(first) != string(second) {
+		t.Fatal("running the same Codex SessionEnd hook twice changed the output")
+	}
+	if !strings.Contains(string(second), "fixture prompt") || !strings.Contains(string(second), "fixture answer") {
+		t.Fatalf("Codex messages missing from output:\n%s", second)
+	}
+	attachment := filepath.Join(outDir, "codex-project", "attachments_2026-09-17_hook-session-id", "image_001.png")
+	if _, err := os.Stat(attachment); err != nil {
+		t.Fatalf("Codex image missing: %v", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		blockedOutDir := t.TempDir()
+		projectDir := filepath.Join(blockedOutDir, "codex-project")
+		if err := os.Mkdir(projectDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		realDir := filepath.Join(blockedOutDir, "real")
+		if err := os.Mkdir(realDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		attachmentsDir := filepath.Join(projectDir, "attachments_2026-09-17_hook-session-id")
+		if err := os.Symlink(realDir, attachmentsDir); err != nil {
+			t.Fatal(err)
+		}
+
+		cmd := exec.Command(binPath, "hook", "-provider", "codex", "-project", "codex-project", "-images", "-dir", blockedOutDir)
+		cmd.Stdin = strings.NewReader(string(stdinBytes))
+		if output, err := cmd.CombinedOutput(); err == nil {
+			t.Fatalf("hook succeeded with a symlinked attachments directory:\n%s", output)
+		}
+		markdownPath := filepath.Join(projectDir, "2026-09-17_hook-session-id.md")
+		if _, err := os.Stat(markdownPath); !os.IsNotExist(err) {
+			t.Fatalf("hook published Markdown despite image save failure: %v", err)
+		}
 	}
 }
 

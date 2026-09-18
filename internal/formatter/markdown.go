@@ -1,17 +1,17 @@
 package formatter
 
 import (
-	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/capybara-translation/ccrec/internal/parser"
+	"github.com/capybara-translation/ccrec/internal/safefile"
 )
 
 // Options controls the Markdown output.
@@ -74,17 +74,19 @@ var htmlElements = map[string]bool{
 
 // FormatMarkdown converts parsed records into a Markdown document.
 func FormatMarkdown(w io.Writer, records []*parser.Record, opts Options) error {
-	// Sort by timestamp.
-	sorted := make([]*parser.Record, len(records))
-	copy(sorted, records)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Timestamp.Before(sorted[j].Timestamp)
-	})
+	checked := &checkedWriter{writer: w}
+	w = checked
+
+	// Preserve transcript source order. Timestamps are display metadata and may
+	// be missing, equal, or move backwards.
+	visible := make([]*parser.Record, len(records))
+	copy(visible, records)
 
 	// Filter unless --include-all.
 	if !opts.IncludeAll {
-		sorted = FilterRecords(sorted, opts.IncludeToolUse)
+		visible = FilterRecordsWithImages(visible, opts.IncludeToolUse, opts.IncludeImages)
 	}
+	visible = renderableRecords(visible, opts)
 
 	// Header.
 	fmt.Fprintln(w, "# Conversation Log")
@@ -92,59 +94,88 @@ func FormatMarkdown(w io.Writer, records []*parser.Record, opts Options) error {
 	if opts.SourcePath != "" {
 		fmt.Fprintf(w, "**File:** `%s`\n", opts.SourcePath)
 	}
-	fmt.Fprintf(w, "**Messages:** %d\n", len(sorted))
+	fmt.Fprintf(w, "**Messages:** %d\n", len(visible))
 	fmt.Fprintln(w)
 
 	// Messages.
 	imageCounter := 0
-	for _, rec := range sorted {
+	for _, rec := range visible {
 		if err := writeMessage(w, rec, opts, &imageCounter); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return checked.err
+}
+
+func renderableRecords(records []*parser.Record, opts Options) []*parser.Record {
+	visible := make([]*parser.Record, 0, len(records))
+	for _, rec := range records {
+		text := strings.TrimSpace(recordText(rec, opts.IncludeToolUse))
+		hasImages := opts.IncludeImages && opts.AttachmentsDir != "" && len(rec.Images) > 0
+		if text != "" || hasImages {
+			visible = append(visible, rec)
+		}
+	}
+	return visible
+}
+
+// checkedWriter remembers the first write error so callers cannot accidentally
+// publish a partially rendered document when a fmt write result is ignored.
+type checkedWriter struct {
+	writer io.Writer
+	err    error
+}
+
+func (w *checkedWriter) Write(p []byte) (int, error) {
+	if w.err != nil {
+		return 0, w.err
+	}
+	n, err := w.writer.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		w.err = err
+	}
+	return n, err
 }
 
 func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *int) error {
-	if rec.Message == nil {
+	if rec.Message == nil && rec.Text == "" && len(rec.Images) == 0 {
 		return nil
 	}
 
-	// Extract text.
-	var text string
-	if opts.IncludeToolUse {
-		text = parser.ExtractTextWithToolUse(rec.Message.Content)
-	} else {
-		text = parser.ExtractText(rec.Message.Content)
-	}
+	// Codex records expose normalized visible text directly. Claude records
+	// continue through the legacy content extractor for tool summaries/images.
+	text := recordText(rec, opts.IncludeToolUse)
 
 	// Extract images if enabled.
 	var imagePaths []string
 	if opts.IncludeImages && opts.AttachmentsDir != "" {
-		images := parser.ExtractImages(rec.Message.Content)
-		for _, img := range images {
+		for _, img := range rec.Images {
 			*imageCounter++
 			path, err := saveImage(opts.AttachmentsDir, *imageCounter, img)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to save image: %v\n", err)
-				continue
+				return fmt.Errorf("save image: %w", err)
 			}
 			imagePaths = append(imagePaths, path)
 		}
 	}
 
 	text = strings.TrimSpace(text)
-	if text == "" && len(imagePaths) == 0 && !opts.IncludeAll {
+	if text == "" && len(imagePaths) == 0 {
 		return nil
 	}
 
 	// Role heading.
-	role := formatRole(rec.Type)
+	role := formatRole(recordRole(rec))
 	fmt.Fprintf(w, "## %s\n\n", role)
 
 	// Timestamp.
-	fmt.Fprintf(w, "**Time:** %s\n\n", rec.Timestamp.Local().Format("2006-01-02 15:04:05"))
+	if !rec.Timestamp.IsZero() {
+		fmt.Fprintf(w, "**Time:** %s\n\n", rec.Timestamp.Local().Format("2006-01-02 15:04:05"))
+	}
 
 	// Images.
 	for _, p := range imagePaths {
@@ -162,38 +193,69 @@ func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *i
 	return nil
 }
 
-// saveImage decodes a base64 image and saves it to the attachments directory.
-// Returns the relative path for Markdown reference.
+// saveImage atomically saves parser-validated bytes and returns the relative
+// path for the Markdown reference.
 func saveImage(attachmentsDir string, index int, img parser.ImageSource) (string, error) {
-	if err := os.MkdirAll(attachmentsDir, 0o755); err != nil {
-		return "", fmt.Errorf("mkdir %s: %w", attachmentsDir, err)
+	if len(img.Bytes) == 0 {
+		return "", fmt.Errorf("image data was not validated by parser")
+	}
+	ext, ok := imageExtension(img.MediaType)
+	if !ok {
+		return "", fmt.Errorf("unsupported image media type %q", img.MediaType)
 	}
 
-	ext := ".png"
-	switch img.MediaType {
-	case "image/jpeg":
-		ext = ".jpg"
-	case "image/gif":
-		ext = ".gif"
-	case "image/webp":
-		ext = ".webp"
+	if err := ensureAttachmentsDir(attachmentsDir); err != nil {
+		return "", err
 	}
 
 	fileName := fmt.Sprintf("image_%03d%s", index, ext)
 	filePath := filepath.Join(attachmentsDir, fileName)
 
-	data, err := base64.StdEncoding.DecodeString(img.Data)
-	if err != nil {
-		return "", fmt.Errorf("decode base64: %w", err)
-	}
-
-	if err := os.WriteFile(filePath, data, 0o644); err != nil {
+	if err := safefile.Write(filePath, 0o600, func(w io.Writer) error {
+		_, err := w.Write(img.Bytes)
+		return err
+	}); err != nil {
 		return "", fmt.Errorf("write %s: %w", filePath, err)
 	}
 
 	// Return relative path for Markdown reference.
 	dirName := filepath.Base(attachmentsDir)
 	return dirName + "/" + fileName, nil
+}
+
+func ensureAttachmentsDir(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return fmt.Errorf("mkdir %s: %w", path, err)
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect attachments directory %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("attachments directory %s is a symlink", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("attachments path %s is not a directory", path)
+	}
+	return nil
+}
+
+func imageExtension(mediaType string) (string, bool) {
+	switch mediaType {
+	case "image/png":
+		return ".png", true
+	case "image/jpeg":
+		return ".jpg", true
+	case "image/gif":
+		return ".gif", true
+	case "image/webp":
+		return ".webp", true
+	default:
+		return "", false
+	}
 }
 
 func formatRole(msgType string) string {

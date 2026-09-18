@@ -23,10 +23,16 @@ var excludedPrefixes = []string{
 
 // FilterRecords returns only records that contain meaningful conversation content.
 func FilterRecords(records []*parser.Record, includeToolUse bool) []*parser.Record {
+	return FilterRecordsWithImages(records, includeToolUse, false)
+}
+
+// FilterRecordsWithImages returns meaningful conversation records, retaining
+// image-only messages when image extraction is enabled.
+func FilterRecordsWithImages(records []*parser.Record, includeToolUse, includeImages bool) []*parser.Record {
 	var filtered []*parser.Record
 
 	for _, rec := range records {
-		if shouldInclude(rec, includeToolUse) {
+		if shouldInclude(rec, includeToolUse, includeImages) {
 			filtered = append(filtered, rec)
 		}
 	}
@@ -34,9 +40,9 @@ func FilterRecords(records []*parser.Record, includeToolUse bool) []*parser.Reco
 	return filtered
 }
 
-func shouldInclude(rec *parser.Record, includeToolUse bool) bool {
+func shouldInclude(rec *parser.Record, includeToolUse, includeImages bool) bool {
 	// Only include user and assistant messages.
-	switch rec.Type {
+	switch recordRole(rec) {
 	case "user", "assistant":
 		// continue
 	default:
@@ -47,32 +53,55 @@ func shouldInclude(rec *parser.Record, includeToolUse bool) bool {
 		return false
 	}
 
-	if rec.Message == nil {
+	if rec.Message == nil && rec.Text == "" && (!includeImages || len(rec.Images) == 0) {
 		return false
 	}
 
-	var text string
-	if includeToolUse {
-		text = parser.ExtractTextWithToolUse(rec.Message.Content)
-	} else {
-		text = parser.ExtractText(rec.Message.Content)
-	}
+	text := recordText(rec, includeToolUse)
 	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
+	if trimmed == "" && (!includeImages || len(rec.Images) == 0) {
 		return false
 	}
 
-	for _, pat := range excludedPatterns {
-		if strings.Contains(trimmed, pat) {
-			return false
+	// These patterns identify Claude Code control/noise messages. Codex parser
+	// records already contain only explicitly visible text, so applying the
+	// Claude-specific rules would discard legitimate conversation content.
+	if rec.Provider != parser.ProviderCodex {
+		for _, pat := range excludedPatterns {
+			if strings.Contains(trimmed, pat) {
+				return false
+			}
 		}
-	}
 
-	for _, prefix := range excludedPrefixes {
-		if strings.HasPrefix(trimmed, prefix) {
-			return false
+		for _, prefix := range excludedPrefixes {
+			if strings.HasPrefix(trimmed, prefix) {
+				return false
+			}
 		}
 	}
 
 	return true
+}
+
+func recordText(rec *parser.Record, includeToolUse bool) string {
+	if rec.Text != "" {
+		return rec.Text
+	}
+	if rec.Message == nil {
+		return ""
+	}
+	if includeToolUse {
+		return parser.ExtractTextWithToolUse(rec.Message.Content)
+	}
+	return parser.ExtractText(rec.Message.Content)
+}
+
+func recordRole(rec *parser.Record) string {
+	if rec.Role != "" {
+		return rec.Role
+	}
+	if rec.Message != nil && rec.Message.Role != "" {
+		return rec.Message.Role
+	}
+	return rec.Type
 }
