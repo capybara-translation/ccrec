@@ -14,6 +14,8 @@ import (
 	"github.com/capybara-translation/ccrec/internal/parser"
 )
 
+const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+
 func TestFormatMarkdown_BasicOutput(t *testing.T) {
 	ts := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
 	records := []*parser.Record{
@@ -434,7 +436,7 @@ func TestSaveImage_UsesPrivatePermissions(t *testing.T) {
 	if err := os.WriteFile(oldImage, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := saveImage(attachments, 1, parser.ImageSource{MediaType: "image/png", Data: "eA=="})
+	_, err := saveImage(attachments, 1, parser.ImageSource{MediaType: "image/png", Data: tinyPNGBase64})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,5 +453,136 @@ func TestSaveImage_UsesPrivatePermissions(t *testing.T) {
 	}
 	if got := fileInfo.Mode().Perm(); got != 0o600 {
 		t.Fatalf("image mode = %o, want 600", got)
+	}
+}
+
+func TestFormatMarkdown_SavesNormalizedCodexImages(t *testing.T) {
+	attachments := filepath.Join(t.TempDir(), "attachments")
+	record := &parser.Record{
+		Type:     "user",
+		Role:     "user",
+		Provider: parser.ProviderCodex,
+		Text:     "with image",
+		Images:   []parser.ImageSource{{MediaType: "image/png", Data: tinyPNGBase64}},
+	}
+
+	var buf bytes.Buffer
+	if err := FormatMarkdown(&buf, []*parser.Record{record}, Options{IncludeImages: true, AttachmentsDir: attachments}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "![image](attachments/image_001.png)") {
+		t.Fatalf("Markdown image missing:\n%s", buf.String())
+	}
+	if _, err := os.Stat(filepath.Join(attachments, "image_001.png")); err != nil {
+		t.Fatalf("saved image missing: %v", err)
+	}
+}
+
+func TestFormatMarkdown_IncludesImageOnlyRecordOnlyWhenImagesEnabled(t *testing.T) {
+	record := &parser.Record{
+		Type:     "user",
+		Role:     "user",
+		Provider: parser.ProviderCodex,
+		Images:   []parser.ImageSource{{MediaType: "image/png", Data: tinyPNGBase64}},
+	}
+
+	var withoutImages bytes.Buffer
+	if err := FormatMarkdown(&withoutImages, []*parser.Record{record}, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(withoutImages.String(), "## User") {
+		t.Fatalf("image-only record should be hidden without -images:\n%s", withoutImages.String())
+	}
+
+	var withImages bytes.Buffer
+	attachments := filepath.Join(t.TempDir(), "attachments")
+	if err := FormatMarkdown(&withImages, []*parser.Record{record}, Options{IncludeImages: true, AttachmentsDir: attachments}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(withImages.String(), "## User") || !strings.Contains(withImages.String(), "![image](attachments/image_001.png)") {
+		t.Fatalf("image-only record missing with -images:\n%s", withImages.String())
+	}
+}
+
+func TestFormatMarkdown_DoesNotIncludeImageOnlyRecordWithAllButWithoutImages(t *testing.T) {
+	record := &parser.Record{
+		Type:     "user",
+		Role:     "user",
+		Provider: parser.ProviderCodex,
+		Images:   []parser.ImageSource{{MediaType: "image/png", Data: tinyPNGBase64}},
+	}
+
+	var output bytes.Buffer
+	if err := FormatMarkdown(&output, []*parser.Record{record}, Options{IncludeAll: true}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "## User") {
+		t.Fatalf("-all emitted an image-only message without -images:\n%s", output.String())
+	}
+}
+
+func TestFormatMarkdown_WritesValidImagesAndSkipsInvalidImages(t *testing.T) {
+	attachments := filepath.Join(t.TempDir(), "attachments")
+	record := &parser.Record{
+		Type:     "user",
+		Role:     "user",
+		Provider: parser.ProviderCodex,
+		Images: []parser.ImageSource{
+			{MediaType: "image/png", Data: tinyPNGBase64},
+			{MediaType: "image/png", Data: "bm90IGFuIGltYWdl"},
+		},
+	}
+
+	var output bytes.Buffer
+	if err := FormatMarkdown(&output, []*parser.Record{record}, Options{IncludeImages: true, AttachmentsDir: attachments}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(output.String(), "![image]"); got != 1 {
+		t.Fatalf("rendered %d images, want 1:\n%s", got, output.String())
+	}
+	if _, err := os.Stat(filepath.Join(attachments, "image_001.png")); err != nil {
+		t.Fatalf("valid image missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(attachments, "image_002.png")); !os.IsNotExist(err) {
+		t.Fatalf("invalid image was written: %v", err)
+	}
+}
+
+func TestFormatMarkdown_ExcludesInvalidImageOnlyRecord(t *testing.T) {
+	record := &parser.Record{
+		Type:     "user",
+		Role:     "user",
+		Provider: parser.ProviderCodex,
+		Images:   []parser.ImageSource{{MediaType: "image/png", Data: "bm90IGFuIGltYWdl"}},
+	}
+
+	var output bytes.Buffer
+	if err := FormatMarkdown(&output, []*parser.Record{record}, Options{IncludeImages: true, AttachmentsDir: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "**Messages:** 0") || strings.Contains(output.String(), "## User") {
+		t.Fatalf("invalid image-only record was counted:\n%s", output.String())
+	}
+}
+
+func TestSaveImage_RejectsNonImageData(t *testing.T) {
+	attachments := filepath.Join(t.TempDir(), "attachments")
+	_, err := saveImage(attachments, 1, parser.ImageSource{MediaType: "image/png", Data: "bm90IGFuIGltYWdl"})
+	if err == nil {
+		t.Fatal("non-image payload should be rejected")
+	}
+	if _, statErr := os.Stat(filepath.Join(attachments, "image_001.png")); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid image was written: %v", statErr)
+	}
+}
+
+func TestSaveImage_RejectsMediaTypeMismatch(t *testing.T) {
+	attachments := filepath.Join(t.TempDir(), "attachments")
+	_, err := saveImage(attachments, 1, parser.ImageSource{MediaType: "image/jpeg", Data: tinyPNGBase64})
+	if err == nil {
+		t.Fatal("media type mismatch should be rejected")
+	}
+	if _, statErr := os.Stat(filepath.Join(attachments, "image_001.jpg")); !os.IsNotExist(statErr) {
+		t.Fatalf("mismatched image was written: %v", statErr)
 	}
 }

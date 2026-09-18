@@ -83,7 +83,9 @@ Codex commonly stores local session transcripts under:
 
 Codex exposes `transcript_path` to hooks. Its transcript JSON format is not a stable hook interface, so ccrec uses conservative parsing and regression fixtures for supported formats.
 
-For Codex, ccrec selects exactly one visible-message source family to avoid duplicates: current `item_completed` events first, legacy or subagent `user_message` / `agent_message` events second, and `response_item` records only as a fallback. In the fallback path, user content is exported only when metadata explicitly marks it as `user.text`; older transcripts without that visibility metadata cannot safely reconstruct those user messages. Injected instructions, environment data, plugin metadata, permissions, reasoning, and tool output are not exported as conversation text.
+For Codex, ccrec selects exactly one visible-message source family to avoid duplicates: current `item_completed` events first, legacy or subagent `user_message` / `agent_message` events second, and `response_item` records only as a fallback. In the fallback path, user content is exported only when metadata explicitly marks it as `user.text` or `user.image`; older transcripts without that visibility metadata cannot safely reconstruct those user messages. Injected instructions, environment data, plugin metadata, permissions, reasoning, and tool output are not exported as conversation text.
+
+With `-images`, Codex images are decoded only from embedded `user.image` data and associated with the corresponding visible `item_completed` message by turn ID and message order. ccrec never reads the `local_image.path` recorded in the transcript, because a modified transcript could otherwise copy an unrelated local file. The decoded bytes are checked against the declared PNG, JPEG, GIF, or WebP media type before being written.
 
 Session IDs are selected in this order: hook input, Codex session metadata, transcript filename, then a stable path-derived fallback. Unsafe filename characters are normalized and hashed.
 
@@ -196,7 +198,7 @@ Replace the placeholders: `/path/to/ccrec` with the actual binary path, `<your-r
 
 ## Codex Hook Integration
 
-For final session archives, use Codex `SessionEnd`. It runs for the main thread when a session ends and has a maximum command timeout of three seconds. The initial Codex setup intentionally omits `-images` to keep execution within that limit.
+For final session archives, use Codex `SessionEnd`. It runs for the main thread when a session ends and has a maximum command timeout of three seconds. The initial Codex setup intentionally omits `-images` to reduce work within that limit. Add `-images` to the command if image export is needed, then verify the hook still completes within the timeout for your transcript sizes.
 
 Add the following to `~/.codex/hooks.json`, replacing the executable, repository root, and output paths with absolute paths:
 

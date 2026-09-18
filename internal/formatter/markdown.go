@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -83,7 +84,7 @@ func FormatMarkdown(w io.Writer, records []*parser.Record, opts Options) error {
 
 	// Filter unless --include-all.
 	if !opts.IncludeAll {
-		visible = FilterRecords(visible, opts.IncludeToolUse)
+		visible = FilterRecordsWithImages(visible, opts.IncludeToolUse, opts.IncludeImages)
 	}
 
 	// Header.
@@ -128,7 +129,7 @@ func (w *checkedWriter) Write(p []byte) (int, error) {
 }
 
 func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *int) error {
-	if rec.Message == nil && rec.Text == "" {
+	if rec.Message == nil && rec.Text == "" && len(rec.Images) == 0 {
 		return nil
 	}
 
@@ -138,8 +139,8 @@ func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *i
 
 	// Extract images if enabled.
 	var imagePaths []string
-	if rec.Message != nil && opts.IncludeImages && opts.AttachmentsDir != "" {
-		images := parser.ExtractImages(rec.Message.Content)
+	if opts.IncludeImages && opts.AttachmentsDir != "" {
+		images := recordImages(rec)
 		for _, img := range images {
 			*imageCounter++
 			path, err := saveImage(opts.AttachmentsDir, *imageCounter, img)
@@ -152,7 +153,7 @@ func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *i
 	}
 
 	text = strings.TrimSpace(text)
-	if text == "" && len(imagePaths) == 0 && !opts.IncludeAll {
+	if text == "" && len(imagePaths) == 0 {
 		return nil
 	}
 
@@ -184,6 +185,11 @@ func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *i
 // saveImage decodes a base64 image and saves it to the attachments directory.
 // Returns the relative path for Markdown reference.
 func saveImage(attachmentsDir string, index int, img parser.ImageSource) (string, error) {
+	data, ext, err := decodeAndValidateImage(img)
+	if err != nil {
+		return "", err
+	}
+
 	if err := os.MkdirAll(attachmentsDir, 0o700); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", attachmentsDir, err)
 	}
@@ -191,23 +197,8 @@ func saveImage(attachmentsDir string, index int, img parser.ImageSource) (string
 		return "", fmt.Errorf("chmod %s: %w", attachmentsDir, err)
 	}
 
-	ext := ".png"
-	switch img.MediaType {
-	case "image/jpeg":
-		ext = ".jpg"
-	case "image/gif":
-		ext = ".gif"
-	case "image/webp":
-		ext = ".webp"
-	}
-
 	fileName := fmt.Sprintf("image_%03d%s", index, ext)
 	filePath := filepath.Join(attachmentsDir, fileName)
-
-	data, err := base64.StdEncoding.DecodeString(img.Data)
-	if err != nil {
-		return "", fmt.Errorf("decode base64: %w", err)
-	}
 
 	if err := os.WriteFile(filePath, data, 0o600); err != nil {
 		return "", fmt.Errorf("write %s: %w", filePath, err)
@@ -219,6 +210,38 @@ func saveImage(attachmentsDir string, index int, img parser.ImageSource) (string
 	// Return relative path for Markdown reference.
 	dirName := filepath.Base(attachmentsDir)
 	return dirName + "/" + fileName, nil
+}
+
+func decodeAndValidateImage(img parser.ImageSource) ([]byte, string, error) {
+	data, err := base64.StdEncoding.DecodeString(img.Data)
+	if err != nil {
+		return nil, "", fmt.Errorf("decode base64: %w", err)
+	}
+
+	detectedType := http.DetectContentType(data)
+	ext, ok := imageExtension(detectedType)
+	if !ok {
+		return nil, "", fmt.Errorf("unsupported image data type %q", detectedType)
+	}
+	if img.MediaType != detectedType {
+		return nil, "", fmt.Errorf("image media type mismatch: declared %q, detected %q", img.MediaType, detectedType)
+	}
+	return data, ext, nil
+}
+
+func imageExtension(mediaType string) (string, bool) {
+	switch mediaType {
+	case "image/png":
+		return ".png", true
+	case "image/jpeg":
+		return ".jpg", true
+	case "image/gif":
+		return ".gif", true
+	case "image/webp":
+		return ".webp", true
+	default:
+		return "", false
+	}
 }
 
 func formatRole(msgType string) string {

@@ -11,6 +11,8 @@ import (
 	"github.com/capybara-translation/ccrec/internal/parser"
 )
 
+const hookTinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+
 func TestExtractProjectName(t *testing.T) {
 	tests := []struct {
 		name string
@@ -324,6 +326,9 @@ func TestRunIntegration_SkipsEmptyOutput(t *testing.T) {
 	// Transcript with only tool_use (no text) — filtered out without --tools.
 	toolOnlyContent := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/test.go"}}]},"timestamp":"2026-01-15T10:00:00Z"}
 `
+	invalidCodexImageOnlyContent := `{"type":"session_meta","payload":{"id":"session-id"}}
+{"timestamp":"2026-01-15T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,bm90IGFuIGltYWdl"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.image"],"turn_id":"turn-1"}}}
+`
 
 	tests := []struct {
 		name       string
@@ -352,6 +357,12 @@ func TestRunIntegration_SkipsEmptyOutput(t *testing.T) {
 			transcript: metaOnlyContent,
 			extraArgs:  []string{"-all"},
 			wantFile:   true,
+		},
+		{
+			name:       "invalid Codex image-only transcript produces no output",
+			transcript: invalidCodexImageOnlyContent,
+			extraArgs:  []string{"-provider", "codex", "-images"},
+			wantFile:   false,
 		},
 	}
 
@@ -473,6 +484,9 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHookSessionID(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	fixture = append(fixture, []byte(`{"timestamp":"2026-09-17T12:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"image prompt"},{"type":"input_image","image_url":"data:image/png;base64,`+hookTinyPNGBase64+`"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text","user.image"],"turn_id":"image-turn"}}}
+{"timestamp":"2026-09-17T12:00:04Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"image-turn","item":{"type":"UserMessage","content":[{"type":"text","text":"image prompt"},{"type":"local_image","path":"/must/not/be/read.png"}]}}}
+`)...)
 	transcriptPath := filepath.Join(t.TempDir(), "rollout-2026-09-17T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
 	if err := os.WriteFile(transcriptPath, fixture, 0o600); err != nil {
 		t.Fatal(err)
@@ -492,7 +506,7 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHookSessionID(t *testi
 
 	run := func() []byte {
 		t.Helper()
-		cmd := exec.Command(binPath, "hook", "-provider", "codex", "-project", "codex-project", "-dir", outDir)
+		cmd := exec.Command(binPath, "hook", "-provider", "codex", "-project", "codex-project", "-images", "-dir", outDir)
 		cmd.Stdin = strings.NewReader(string(stdinBytes))
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -520,6 +534,10 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHookSessionID(t *testi
 	}
 	if !strings.Contains(string(second), "fixture prompt") || !strings.Contains(string(second), "fixture answer") {
 		t.Fatalf("Codex messages missing from output:\n%s", second)
+	}
+	attachment := filepath.Join(outDir, "codex-project", "attachments_2026-09-17_hook-session-id", "image_001.png")
+	if _, err := os.Stat(attachment); err != nil {
+		t.Fatalf("Codex image missing: %v", err)
 	}
 }
 

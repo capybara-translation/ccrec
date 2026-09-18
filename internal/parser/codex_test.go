@@ -1,10 +1,13 @@
 package parser
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
 func TestParseFileWithOptions_CodexFixture(t *testing.T) {
 	result, err := ParseFileWithOptions(filepath.Join("testdata", "codex-0.145.0.jsonl"), ParseOptions{Provider: ProviderCodex, Strict: true})
@@ -243,6 +246,158 @@ func TestParseReaderWithOptions_CodexDoesNotDeduplicateRepeatedVisibleMessages(t
 	}
 	if result.Records[0].Sequence >= result.Records[1].Sequence {
 		t.Fatalf("sequence was not preserved: %d then %d", result.Records[0].Sequence, result.Records[1].Sequence)
+	}
+}
+
+func TestParseReaderWithOptions_CodexAssociatesVisibleImageByTurnID(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"id":"response-id","type":"message","role":"user","content":[{"type":"input_text","text":"with image"},{"type":"input_image","detail":"high","image_url":"data:image/png;base64,` + tinyPNGBase64 + `"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text","user.image"],"turn_id":"turn-1"}}}`,
+		`{"timestamp":"2026-09-17T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"id":"item-id","client_id":"client-id","type":"UserMessage","content":[{"type":"text","text":"with image"},{"type":"local_image","path":"/path/that/must/not/be/read.png"}]}}}`,
+	}, "\n")
+
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 {
+		t.Fatalf("got %d records, want 1", len(result.Records))
+	}
+	images := result.Records[0].Images
+	if len(images) != 1 {
+		t.Fatalf("got %d images, want 1", len(images))
+	}
+	if images[0].MediaType != "image/png" || images[0].Data != tinyPNGBase64 {
+		t.Fatalf("normalized image = %#v", images[0])
+	}
+}
+
+func TestParseReaderWithOptions_CodexKeepsImageOnlyUserMessage(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,` + tinyPNGBase64 + `"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.image"],"turn_id":"turn-1"}}}`,
+		`{"timestamp":"2026-09-17T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"local_image","path":"/not/read.png"}]}}}`,
+	}, "\n")
+
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 || result.Records[0].Text != "" || len(result.Records[0].Images) != 1 {
+		t.Fatalf("image-only record was not preserved: %#v", result.Records)
+	}
+}
+
+func TestParseReaderWithOptions_CodexImageQueuePreservesUserMessageOrder(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"],"turn_id":"turn-1"}}}`,
+		`{"timestamp":"2026-09-17T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"first"}]}}}`,
+		`{"timestamp":"2026-09-17T00:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"second"},{"type":"input_image","image_url":"data:image/png;base64,` + tinyPNGBase64 + `"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text","user.image"],"turn_id":"turn-1"}}}`,
+		`{"timestamp":"2026-09-17T00:00:04Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"second"},{"type":"local_image","path":"/not/read.png"}]}}}`,
+	}, "\n")
+
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 2 {
+		t.Fatalf("got %d records, want 2", len(result.Records))
+	}
+	if len(result.Records[0].Images) != 0 || len(result.Records[1].Images) != 1 {
+		t.Fatalf("image association = %d then %d, want 0 then 1", len(result.Records[0].Images), len(result.Records[1].Images))
+	}
+}
+
+func TestParseReaderWithOptions_CodexPreservesMultipleImageOrder(t *testing.T) {
+	secondImage := tinyPNGBase64 + "second"
+	input := strings.Join([]string{
+		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,` + tinyPNGBase64 + `"},{"type":"input_image","image_url":"data:image/png;base64,` + secondImage + `"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.image","user.image"],"turn_id":"turn-1"}}}`,
+		`{"timestamp":"2026-09-17T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"local_image","path":"/not/read-1.png"},{"type":"local_image","path":"/not/read-2.png"}]}}}`,
+	}, "\n")
+
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 || len(result.Records[0].Images) != 2 {
+		t.Fatalf("multiple images were not preserved: %#v", result.Records)
+	}
+	if result.Records[0].Images[0].Data != tinyPNGBase64 || result.Records[0].Images[1].Data != secondImage {
+		t.Fatalf("image order changed: %#v", result.Records[0].Images)
+	}
+}
+
+func TestParseReaderWithOptions_CodexSkipsAmbiguousTurnImageAssociation(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"unmatched"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"],"turn_id":"turn-1"}}}`,
+		`{"timestamp":"2026-09-17T00:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"with image"},{"type":"input_image","image_url":"data:image/png;base64,` + tinyPNGBase64 + `"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text","user.image"],"turn_id":"turn-1"}}}`,
+		`{"timestamp":"2026-09-17T00:00:03Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"with image"},{"type":"local_image","path":"/not/read.png"}]}}}`,
+	}, "\n")
+
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 || len(result.Records[0].Images) != 0 {
+		t.Fatalf("ambiguous turn image was associated: %#v", result.Records)
+	}
+	if len(result.Diagnostics) == 0 || !result.Diagnostics[0].Strict {
+		t.Fatalf("ambiguous turn should produce a strict diagnostic: %#v", result.Diagnostics)
+	}
+}
+
+func TestParseReaderWithOptions_CodexDoesNotReadLocalImagePath(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "private.png")
+	if err := os.WriteFile(imagePath, []byte("private local file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := strings.Join([]string{
+		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:01Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"path only"},{"type":"local_image","path":"` + imagePath + `"}]}}}`,
+	}, "\n")
+
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 || len(result.Records[0].Images) != 0 {
+		t.Fatalf("local image path was normalized: %#v", result.Records)
+	}
+	if len(result.Diagnostics) == 0 || !result.Diagnostics[0].Strict {
+		t.Fatalf("missing embedded image should produce a strict diagnostic: %#v", result.Diagnostics)
+	}
+}
+
+func TestParseReaderWithOptions_CodexResponseFallbackIncludesExplicitUserImage(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fallback"},{"type":"input_image","image_url":"data:image/png;base64,` + tinyPNGBase64 + `"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text","user.image"],"turn_id":"turn-1"}}}`,
+	}, "\n")
+
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 || len(result.Records[0].Images) != 1 {
+		t.Fatalf("fallback image was not normalized: %#v", result.Records)
+	}
+}
+
+func TestParseReaderWithOptions_CodexResponseFallbackKeepsImageOnlyMessage(t *testing.T) {
+	input := strings.Join([]string{
+		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
+		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,` + tinyPNGBase64 + `"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.image"],"turn_id":"turn-1"}}}`,
+	}, "\n")
+
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 || result.Records[0].Text != "" || len(result.Records[0].Images) != 1 {
+		t.Fatalf("image-only fallback was not normalized: %#v", result.Records)
 	}
 }
 

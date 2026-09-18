@@ -135,7 +135,7 @@ func Run(args []string) {
 	// creating empty Markdown files and directories. Note: FormatMarkdown
 	// applies the same filter internally; the duplication is intentional
 	// to prevent file-system side effects before they happen.
-	if !*all && len(formatter.FilterRecords(records, *tools)) == 0 {
+	if !*all && len(formatter.FilterRecordsWithImages(records, *tools, *images)) == 0 {
 		return
 	}
 

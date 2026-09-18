@@ -23,10 +23,16 @@ var excludedPrefixes = []string{
 
 // FilterRecords returns only records that contain meaningful conversation content.
 func FilterRecords(records []*parser.Record, includeToolUse bool) []*parser.Record {
+	return FilterRecordsWithImages(records, includeToolUse, false)
+}
+
+// FilterRecordsWithImages returns meaningful conversation records, retaining
+// image-only messages when image extraction is enabled.
+func FilterRecordsWithImages(records []*parser.Record, includeToolUse, includeImages bool) []*parser.Record {
 	var filtered []*parser.Record
 
 	for _, rec := range records {
-		if shouldInclude(rec, includeToolUse) {
+		if shouldInclude(rec, includeToolUse, includeImages) {
 			filtered = append(filtered, rec)
 		}
 	}
@@ -34,7 +40,7 @@ func FilterRecords(records []*parser.Record, includeToolUse bool) []*parser.Reco
 	return filtered
 }
 
-func shouldInclude(rec *parser.Record, includeToolUse bool) bool {
+func shouldInclude(rec *parser.Record, includeToolUse, includeImages bool) bool {
 	// Only include user and assistant messages.
 	switch recordRole(rec) {
 	case "user", "assistant":
@@ -47,13 +53,13 @@ func shouldInclude(rec *parser.Record, includeToolUse bool) bool {
 		return false
 	}
 
-	if rec.Message == nil && rec.Text == "" {
+	if rec.Message == nil && rec.Text == "" && (!includeImages || !hasValidImage(rec)) {
 		return false
 	}
 
 	text := recordText(rec, includeToolUse)
 	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
+	if trimmed == "" && (!includeImages || !hasValidImage(rec)) {
 		return false
 	}
 
@@ -75,6 +81,25 @@ func shouldInclude(rec *parser.Record, includeToolUse bool) bool {
 	}
 
 	return true
+}
+
+func hasValidImage(rec *parser.Record) bool {
+	for _, image := range recordImages(rec) {
+		if _, _, err := decodeAndValidateImage(image); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func recordImages(rec *parser.Record) []parser.ImageSource {
+	if len(rec.Images) > 0 {
+		return rec.Images
+	}
+	if rec.Message == nil {
+		return nil
+	}
+	return parser.ExtractImages(rec.Message.Content)
 }
 
 func recordText(rec *parser.Record, includeToolUse bool) string {

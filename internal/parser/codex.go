@@ -20,12 +20,14 @@ type codexPayload struct {
 	Phase     Phase          `json:"phase"`
 	ID        string         `json:"id"`
 	SessionID string         `json:"session_id"`
+	TurnID    string         `json:"turn_id"`
 	Text      string         `json:"text"`
 	Message   string         `json:"message"`
 	Content   []codexContent `json:"content"`
 	Item      *codexItem     `json:"item"`
 	Metadata  struct {
 		ContentItemKinds []string `json:"content_item_kinds"`
+		TurnID           string   `json:"turn_id"`
 	} `json:"internal_chat_message_metadata_passthrough"`
 }
 
@@ -36,8 +38,15 @@ type codexItem struct {
 }
 
 type codexContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	ImageURL string `json:"image_url"`
+}
+
+type codexImageQueue struct {
+	byTurn    map[string][][]ImageSource
+	next      map[string]int
+	ambiguous map[string]bool
 }
 
 func parseCodexLines(lines []parsedLine) *Result {
@@ -74,13 +83,17 @@ func parseCodexLines(lines []parsedLine) *Result {
 			hasLegacyVisibleEvents = true
 		}
 	}
+	var images *codexImageQueue
+	if hasCurrentVisibleEvents {
+		images = newCodexImageQueue(records, lines, result)
+	}
 
 	for i, line := range lines {
 		record := records[i]
 		var normalized *Record
 		switch {
 		case hasCurrentVisibleEvents:
-			normalized = normalizeCurrentCodexEvent(record, line.line, result)
+			normalized = normalizeCurrentCodexEvent(record, line.line, result, images)
 		case hasLegacyVisibleEvents:
 			normalized = normalizeLegacyCodexEvent(record, line.line, result)
 		default:
@@ -95,7 +108,7 @@ func parseCodexLines(lines []parsedLine) *Result {
 	return result
 }
 
-func normalizeCurrentCodexEvent(record codexRecord, line int, result *Result) *Record {
+func normalizeCurrentCodexEvent(record codexRecord, line int, result *Result, images *codexImageQueue) *Record {
 	if record.Type != "event_msg" || record.Payload.Type != "item_completed" || record.Payload.Item == nil {
 		return nil
 	}
@@ -110,7 +123,23 @@ func normalizeCurrentCodexEvent(record codexRecord, line int, result *Result) *R
 	default:
 		return nil
 	}
-	return newNormalizedRecord(role, item.Phase, textFromCurrentCodexContent(item.Content), record.Timestamp, line, result)
+	var normalizedImages []ImageSource
+	if role == "user" {
+		expectedImages := countCodexContentType(item.Content, "local_image")
+		queuedImages, found := images.pop(record.Payload.TurnID)
+		switch {
+		case expectedImages == 0 && len(queuedImages) == 0:
+		case !found || len(queuedImages) != expectedImages:
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{
+				Line:    line,
+				Message: fmt.Sprintf("skipped %d Codex local image(s) without matching embedded user.image data", expectedImages),
+				Strict:  true,
+			})
+		default:
+			normalizedImages = queuedImages
+		}
+	}
+	return newNormalizedRecord(role, item.Phase, textFromCurrentCodexContent(item.Content), normalizedImages, record.Timestamp, line, result)
 }
 
 func normalizeLegacyCodexEvent(record codexRecord, line int, result *Result) *Record {
@@ -128,7 +157,7 @@ func normalizeLegacyCodexEvent(record codexRecord, line int, result *Result) *Re
 		return nil
 	}
 	text := firstNonEmpty(record.Payload.Message, record.Payload.Text, textFromCodexContent(record.Payload.Content, "text"))
-	return newNormalizedRecord(role, record.Payload.Phase, text, record.Timestamp, line, result)
+	return newNormalizedRecord(role, record.Payload.Phase, text, nil, record.Timestamp, line, result)
 }
 
 func normalizeCodexResponse(record codexRecord, line int, result *Result) *Record {
@@ -140,6 +169,7 @@ func normalizeCodexResponse(record codexRecord, line int, result *Result) *Recor
 	case "user":
 		kinds := record.Payload.Metadata.ContentItemKinds
 		hasUserText := slices.Contains(kinds, "user.text")
+		hasUserImage := slices.Contains(kinds, "user.image")
 		hasUnknownKind := containsUnknownContentKind(kinds)
 		if hasUnknownKind {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{
@@ -148,30 +178,31 @@ func normalizeCodexResponse(record codexRecord, line int, result *Result) *Recor
 				Strict:  true,
 			})
 		}
-		if !hasUserText {
+		if !hasUserText && !hasUserImage {
 			if allKnownHiddenContentKinds(kinds) {
 				return nil
 			}
 			if !hasUnknownKind {
 				result.Diagnostics = append(result.Diagnostics, Diagnostic{
 					Line:    line,
-					Message: "skipped Codex user response_item without explicit user.text visibility",
+					Message: "skipped Codex user response_item without explicit user.text or user.image visibility",
 					Strict:  true,
 				})
 			}
 			return nil
 		}
-		return newNormalizedRecord("user", PhaseNone, textFromVisibleUserContent(record.Payload.Content, record.Payload.Metadata.ContentItemKinds), record.Timestamp, line, result)
+		images := imagesFromVisibleUserContent(record.Payload.Content, kinds, line, result)
+		return newNormalizedRecord("user", PhaseNone, textFromVisibleUserContent(record.Payload.Content, kinds), images, record.Timestamp, line, result)
 	case "assistant":
-		return newNormalizedRecord("assistant", record.Payload.Phase, textFromCodexContent(record.Payload.Content, "output_text"), record.Timestamp, line, result)
+		return newNormalizedRecord("assistant", record.Payload.Phase, textFromCodexContent(record.Payload.Content, "output_text"), nil, record.Timestamp, line, result)
 	default:
 		return nil
 	}
 }
 
-func newNormalizedRecord(role string, phase Phase, text, timestamp string, line int, result *Result) *Record {
+func newNormalizedRecord(role string, phase Phase, text string, images []ImageSource, timestamp string, line int, result *Result) *Record {
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" && len(images) == 0 {
 		return nil
 	}
 	content, _ := json.Marshal(text)
@@ -182,6 +213,7 @@ func newNormalizedRecord(role string, phase Phase, text, timestamp string, line 
 		Sequence: line,
 		Provider: ProviderCodex,
 		Text:     text,
+		Images:   images,
 		Message: &Message{
 			Role:    role,
 			Content: content,
@@ -197,6 +229,93 @@ func newNormalizedRecord(role string, phase Phase, text, timestamp string, line 
 	}
 	record.Timestamp = parsed
 	return record
+}
+
+func newCodexImageQueue(records []codexRecord, lines []parsedLine, result *Result) *codexImageQueue {
+	queue := &codexImageQueue{
+		byTurn:    make(map[string][][]ImageSource),
+		next:      make(map[string]int),
+		ambiguous: make(map[string]bool),
+	}
+	eventCounts := make(map[string]int)
+	for i, record := range records {
+		if record.Type == "event_msg" && record.Payload.Type == "item_completed" &&
+			record.Payload.Item != nil && record.Payload.Item.Type == "UserMessage" && record.Payload.TurnID != "" {
+			eventCounts[record.Payload.TurnID]++
+		}
+		if record.Type != "response_item" || record.Payload.Type != "message" || record.Payload.Role != "user" {
+			continue
+		}
+		kinds := record.Payload.Metadata.ContentItemKinds
+		if !slices.Contains(kinds, "user.text") && !slices.Contains(kinds, "user.image") {
+			continue
+		}
+		turnID := record.Payload.Metadata.TurnID
+		if turnID == "" {
+			continue
+		}
+		images := imagesFromVisibleUserContent(record.Payload.Content, kinds, lines[i].line, result)
+		queue.byTurn[turnID] = append(queue.byTurn[turnID], images)
+	}
+	for turnID, eventCount := range eventCounts {
+		if len(queue.byTurn[turnID]) != eventCount {
+			queue.ambiguous[turnID] = true
+		}
+	}
+	return queue
+}
+
+func (q *codexImageQueue) pop(turnID string) ([]ImageSource, bool) {
+	if q == nil || turnID == "" || q.ambiguous[turnID] {
+		return nil, false
+	}
+	groups := q.byTurn[turnID]
+	index := q.next[turnID]
+	if index >= len(groups) {
+		return nil, false
+	}
+	q.next[turnID] = index + 1
+	return groups[index], true
+}
+
+func imagesFromVisibleUserContent(content []codexContent, kinds []string, line int, result *Result) []ImageSource {
+	var images []ImageSource
+	for i, block := range content {
+		if i >= len(kinds) || kinds[i] != "user.image" || block.Type != "input_image" {
+			continue
+		}
+		image, err := imageSourceFromDataURL(block.ImageURL)
+		if err != nil {
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Line: line, Message: err.Error(), Strict: true})
+			continue
+		}
+		images = append(images, image)
+	}
+	return images
+}
+
+func imageSourceFromDataURL(value string) (ImageSource, error) {
+	header, data, ok := strings.Cut(value, ",")
+	if !ok || !strings.HasPrefix(header, "data:image/") || !strings.HasSuffix(header, ";base64") || data == "" {
+		return ImageSource{}, fmt.Errorf("invalid Codex user.image data URL")
+	}
+	mediaType := strings.TrimSuffix(strings.TrimPrefix(header, "data:"), ";base64")
+	switch mediaType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return ImageSource{Type: "base64", MediaType: mediaType, Data: data}, nil
+	default:
+		return ImageSource{}, fmt.Errorf("unsupported Codex user.image media type %q", mediaType)
+	}
+}
+
+func countCodexContentType(content []codexContent, target string) int {
+	count := 0
+	for _, block := range content {
+		if block.Type == target {
+			count++
+		}
+	}
+	return count
 }
 
 func textFromCodexContent(content []codexContent, requiredType string) string {
@@ -249,7 +368,7 @@ func allKnownHiddenContentKinds(kinds []string) bool {
 
 func containsUnknownContentKind(kinds []string) bool {
 	for _, kind := range kinds {
-		if kind == "user.text" || isKnownHiddenContentKind(kind) {
+		if kind == "user.text" || kind == "user.image" || isKnownHiddenContentKind(kind) {
 			continue
 		}
 		return true

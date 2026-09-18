@@ -7,20 +7,21 @@ import (
 
 // Record represents a single line in the JSONL transcript file.
 type Record struct {
-	Type       string    `json:"type"`
-	Message    *Message  `json:"message,omitempty"`
-	UUID       string    `json:"uuid,omitempty"`
-	ParentUUID string    `json:"parentUuid,omitempty"`
-	Timestamp  time.Time `json:"timestamp"`
-	SessionID  string    `json:"sessionId,omitempty"`
-	IsMeta     bool      `json:"isMeta,omitempty"`
-	Slug       string    `json:"slug,omitempty"`
-	CWD        string    `json:"cwd,omitempty"`
-	Role       string    `json:"-"`
-	Text       string    `json:"-"`
-	Phase      Phase     `json:"-"`
-	Sequence   int       `json:"-"`
-	Provider   Provider  `json:"-"`
+	Type       string        `json:"type"`
+	Message    *Message      `json:"message,omitempty"`
+	UUID       string        `json:"uuid,omitempty"`
+	ParentUUID string        `json:"parentUuid,omitempty"`
+	Timestamp  time.Time     `json:"timestamp"`
+	SessionID  string        `json:"sessionId,omitempty"`
+	IsMeta     bool          `json:"isMeta,omitempty"`
+	Slug       string        `json:"slug,omitempty"`
+	CWD        string        `json:"cwd,omitempty"`
+	Role       string        `json:"-"`
+	Text       string        `json:"-"`
+	Images     []ImageSource `json:"-"`
+	Phase      Phase         `json:"-"`
+	Sequence   int           `json:"-"`
+	Provider   Provider      `json:"-"`
 }
 
 // Message represents the message field within a record.
