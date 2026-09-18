@@ -91,7 +91,7 @@ Image association requires `content_item_kinds` metadata. In observed rollouts i
 
 Parsing memory grows with transcript size. The parser retains roughly two copies of the JSONL data before Go runtime overhead; decoded image bytes add further memory only when `-images` is enabled.
 
-Session IDs are selected in this order: hook input, Codex session metadata, transcript filename, then a stable path-derived fallback. Unsafe filename characters are normalized and hashed.
+Session IDs are selected in this order: hook input, Codex session metadata, transcript filename, then a stable path-derived fallback. When an ID is available, Codex output names use the first eight hexadecimal characters of its SHA-256 digest. This keeps names short without relying on the shared timestamp prefix of Codex UUIDv7 IDs.
 
 ### Example output
 
@@ -131,7 +131,7 @@ When `-o` is used, ccrec writes complete same-directory temporary files and atom
 ## Breaking changes in Codex support
 
 - Conversation order now follows JSONL source order for both providers. Sessions whose timestamps move backwards can differ from older ccrec output; equal timestamps previously did not guarantee source order.
-- Hook output names now use the complete collision-resistant session ID instead of the first eight characters. Existing short-ID files remain untouched, so an in-progress session spanning the upgrade can leave both names; rename or remove the older file manually if desired.
+- Codex hook output names use an eight-character hash of the complete session ID instead of the raw first eight characters. This removes the systematic UUIDv7 timestamp-prefix collision while keeping filenames compact; as with any 32-bit name, accidental hash collisions remain possible.
 - With `-all`, records that have neither renderable text nor requested images are no longer counted or emitted as empty message headings.
 - Claude Code image-only user messages are now emitted when `-images` is enabled.
 
@@ -196,7 +196,7 @@ Replace the placeholders: `/path/to/ccrec` with the actual binary path, `<your-r
 - With `-base`, project name is the relative path from base to the project directory (e.g., `my-app/backend`)
 - Without `-base`, project name is the project directory basename (e.g., `backend`)
 - Date is derived from the first message timestamp (stable across midnight)
-- Session ID is the full sanitized hook ID, transcript metadata ID, or filename-derived ID (in that order)
+- Session ID comes from the hook ID, transcript metadata ID, or filename (in that order). Claude Code keeps the sanitized ID; Codex uses an eight-character hash of the complete ID
 - Overwrites the same file on every invocation within a session
 - Skips subagent transcripts (only saves the main conversation)
 - Skips execution when `stop_hook_active` is true (prevents infinite loops)

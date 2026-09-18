@@ -244,13 +244,13 @@ func extractSessionID(transcriptPath string) string {
 }
 
 func resolveSessionID(hookID, metadataID, transcriptPath string, provider parser.Provider) string {
-	for _, candidate := range []string{hookID, metadataID} {
+	for _, candidate := range []string{hookID, metadataID, extractSessionID(transcriptPath)} {
 		if sanitized := sanitizeSessionToken(candidate); sanitized != "" {
+			if provider == parser.ProviderCodex {
+				return shortSessionHash(candidate)
+			}
 			return sanitized
 		}
-	}
-	if sanitized := sanitizeSessionToken(extractSessionID(transcriptPath)); sanitized != "" {
-		return sanitized
 	}
 	canonical, err := filepath.Abs(transcriptPath)
 	if err != nil {
@@ -258,6 +258,11 @@ func resolveSessionID(hookID, metadataID, transcriptPath string, provider parser
 	}
 	digest := sha256.Sum256([]byte(string(provider) + "\x00" + canonical))
 	return fmt.Sprintf("session-%x", digest[:8])
+}
+
+func shortSessionHash(sessionID string) string {
+	digest := sha256.Sum256([]byte(sessionID))
+	return fmt.Sprintf("%x", digest[:4])
 }
 
 func sanitizeSessionToken(value string) string {

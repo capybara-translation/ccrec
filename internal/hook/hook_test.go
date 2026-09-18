@@ -175,10 +175,10 @@ func TestResolveSessionID_FilenameFallbackDoesNotCollideOnSharedPrefix(t *testin
 	}
 }
 
-func TestResolveSessionID_PrefersHookInputAndSanitizesIt(t *testing.T) {
+func TestResolveSessionID_PrefersHookInputAndHashesItForCodex(t *testing.T) {
 	got := resolveSessionID("../hook/session id", "metadata-id", "/tmp/rollout-2026-09-17T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl", parser.ProviderCodex)
-	if !strings.HasPrefix(got, "hook-session-id-") || strings.ContainsAny(got, "/ ") {
-		t.Fatalf("resolved session ID = %q, want a safe hashed hook-session-id token", got)
+	if got != "dc325de2" {
+		t.Fatalf("resolved session ID = %q, want hash of the hook session ID", got)
 	}
 }
 
@@ -192,8 +192,34 @@ func TestSanitizeSessionToken_DifferentUnsafeIDsDoNotCollide(t *testing.T) {
 
 func TestResolveSessionID_UsesCodexMetadataBeforeFilename(t *testing.T) {
 	got := resolveSessionID("", "metadata-full-id", "/tmp/rollout-2026-09-17T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl", parser.ProviderCodex)
-	if got != "metadata-full-id" {
-		t.Fatalf("resolved session ID = %q, want metadata-full-id", got)
+	if got != "75ea97cc" {
+		t.Fatalf("resolved session ID = %q, want hash of metadata-full-id", got)
+	}
+}
+
+func TestResolveSessionID_CodexUsesEightCharacterHashOfFullID(t *testing.T) {
+	first := resolveSessionID("01a0aeac-efdc-7e71-869a-157d6c25761c", "", "/tmp/ignored.jsonl", parser.ProviderCodex)
+	second := resolveSessionID("01a0aeac-1111-2222-3333-444444444444", "", "/tmp/ignored.jsonl", parser.ProviderCodex)
+
+	if first != "5ddecb61" {
+		t.Fatalf("first resolved session ID = %q, want 5ddecb61", first)
+	}
+	if second != "dca5187d" {
+		t.Fatalf("second resolved session ID = %q, want dca5187d", second)
+	}
+}
+
+func TestResolveSessionID_CodexHashesFilenameFallback(t *testing.T) {
+	got := resolveSessionID("", "", "/tmp/rollout-2026-09-17T00-00-00-01a0aeac-efdc-7e71-869a-157d6c25761c.jsonl", parser.ProviderCodex)
+	if got != "5ddecb61" {
+		t.Fatalf("resolved session ID = %q, want hash of the complete filename ID", got)
+	}
+}
+
+func TestResolveSessionID_ClaudeKeepsExistingID(t *testing.T) {
+	got := resolveSessionID("42bb222a-a575-4386-bae8-2b0ce9a93d40", "", "/tmp/ignored.jsonl", parser.ProviderClaude)
+	if got != "42bb222a-a575-4386-bae8-2b0ce9a93d40" {
+		t.Fatalf("resolved session ID = %q, want unchanged Claude ID", got)
 	}
 }
 
@@ -470,7 +496,7 @@ func TestRunIntegration_SkipsUnavailableTranscript(t *testing.T) {
 	}
 }
 
-func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHookSessionID(t *testing.T) {
+func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHashedHookSessionID(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -513,7 +539,7 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHookSessionID(t *testi
 		if err != nil {
 			t.Fatalf("Codex hook failed: %v\n%s", err, out)
 		}
-		path := filepath.Join(outDir, "codex-project", "2026-09-17_hook-session-id.md")
+		path := filepath.Join(outDir, "codex-project", "2026-09-17_32c723f6.md")
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read output: %v", err)
@@ -536,7 +562,7 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHookSessionID(t *testi
 	if !strings.Contains(string(second), "fixture prompt") || !strings.Contains(string(second), "fixture answer") {
 		t.Fatalf("Codex messages missing from output:\n%s", second)
 	}
-	attachment := filepath.Join(outDir, "codex-project", "attachments_2026-09-17_hook-session-id", "image_001.png")
+	attachment := filepath.Join(outDir, "codex-project", "attachments_2026-09-17_32c723f6", "image_001.png")
 	if _, err := os.Stat(attachment); err != nil {
 		t.Fatalf("Codex image missing: %v", err)
 	}
@@ -551,7 +577,7 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHookSessionID(t *testi
 		if err := os.Mkdir(realDir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		attachmentsDir := filepath.Join(projectDir, "attachments_2026-09-17_hook-session-id")
+		attachmentsDir := filepath.Join(projectDir, "attachments_2026-09-17_32c723f6")
 		if err := os.Symlink(realDir, attachmentsDir); err != nil {
 			t.Fatal(err)
 		}
@@ -561,7 +587,7 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHookSessionID(t *testi
 		if output, err := cmd.CombinedOutput(); err == nil {
 			t.Fatalf("hook succeeded with a symlinked attachments directory:\n%s", output)
 		}
-		markdownPath := filepath.Join(projectDir, "2026-09-17_hook-session-id.md")
+		markdownPath := filepath.Join(projectDir, "2026-09-17_32c723f6.md")
 		if _, err := os.Stat(markdownPath); !os.IsNotExist(err) {
 			t.Fatalf("hook published Markdown despite image save failure: %v", err)
 		}
