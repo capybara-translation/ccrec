@@ -3,38 +3,33 @@ package parser
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 )
 
-const (
-	// maxScannerBuf is the maximum buffer size for bufio.Scanner.
-	// 16 MB handles lines with large tool results (file reads, web fetches, etc.).
-	maxScannerBuf = 16 * 1024 * 1024
-)
+// maxScannerBuf is the maximum retained size of one JSONL record. Longer
+// records are discarded without preventing later records from being parsed.
+const maxScannerBuf = 16 * 1024 * 1024
+
+type jsonPresence bool
+
+func (p *jsonPresence) UnmarshalJSON([]byte) error {
+	*p = true
+	return nil
+}
 
 type envelope struct {
-	Type    string          `json:"type"`
-	Message json.RawMessage `json:"message,omitempty"`
-	Payload json.RawMessage `json:"payload,omitempty"`
+	Type    string       `json:"type"`
+	Message jsonPresence `json:"message,omitempty"`
+	Payload jsonPresence `json:"payload,omitempty"`
 }
 
 type parsedLine struct {
 	line     int
 	raw      []byte
 	envelope envelope
-}
-
-// ParseFile preserves the original convenience API and auto-detects the
-// provider. Recoverable diagnostics are written to stderr for compatibility.
-func ParseFile(path string) ([]*Record, error) {
-	result, err := ParseFileWithOptions(path, ParseOptions{Provider: ProviderAuto})
-	if err != nil {
-		return nil, err
-	}
-	writeDiagnostics(os.Stderr, result.Diagnostics)
-	return result.Records, nil
 }
 
 // ParseFileWithOptions parses a transcript and returns normalized records.
@@ -46,15 +41,6 @@ func ParseFileWithOptions(path string, opts ParseOptions) (*Result, error) {
 	defer f.Close()
 
 	return parseReaderWithOptions(f, opts)
-}
-
-func parseReader(r io.Reader) ([]*Record, error) {
-	result, err := parseReaderWithOptions(r, ParseOptions{Provider: ProviderAuto})
-	if err != nil {
-		return nil, err
-	}
-	writeDiagnostics(os.Stderr, result.Diagnostics)
-	return result.Records, nil
 }
 
 func parseReaderWithOptions(r io.Reader, opts ParseOptions) (*Result, error) {
@@ -98,9 +84,9 @@ func parseReaderWithOptions(r io.Reader, opts ParseOptions) (*Result, error) {
 	var result *Result
 	switch provider {
 	case ProviderClaude:
-		result = parseClaudeLines(lines)
+		result = parseClaudeLines(lines, opts)
 	case ProviderCodex:
-		result = parseCodexLines(lines)
+		result = parseCodexLines(lines, opts)
 	default:
 		return nil, fmt.Errorf("unsupported provider %q", provider)
 	}
@@ -133,17 +119,63 @@ func strictDiagnosticError(diagnostic Diagnostic) error {
 }
 
 func readLines(r io.Reader) ([]parsedLine, []Diagnostic, int, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBuf)
+	reader := bufio.NewReaderSize(r, 64*1024)
 
 	var lines []parsedLine
 	var diagnostics []Diagnostic
 	lineNum := 0
 	inputRecords := 0
-	for scanner.Scan() {
+	for {
+		var line []byte
+		tooLong := false
+		reachedEOF := false
+		for {
+			fragment, err := reader.ReadSlice('\n')
+			if err == nil || errors.Is(err, io.EOF) {
+				fragment = bytesTrimLineEnding(fragment)
+			}
+			if !tooLong {
+				if len(line)+len(fragment) > maxScannerBuf {
+					line = nil
+					tooLong = true
+				} else {
+					line = append(line, fragment...)
+				}
+			}
+
+			switch {
+			case err == nil:
+			case errors.Is(err, bufio.ErrBufferFull):
+				continue
+			case errors.Is(err, io.EOF):
+				reachedEOF = true
+			default:
+				return lines, diagnostics, inputRecords, fmt.Errorf("read transcript: %w", err)
+			}
+			break
+		}
+
+		if reachedEOF && len(line) == 0 && !tooLong {
+			break
+		}
 		lineNum++
-		line := scanner.Bytes()
+		line = bytesTrimLineEnding(line)
+		if tooLong {
+			inputRecords++
+			diagnostics = append(diagnostics, Diagnostic{
+				Line:    lineNum,
+				Message: fmt.Sprintf("record exceeds %d-byte limit (skipped)", maxScannerBuf),
+				Strict:  true,
+			})
+			if reachedEOF {
+				break
+			}
+			continue
+		}
 		if len(line) == 0 {
+			if reachedEOF {
+				break
+			}
 			continue
 		}
 		inputRecords++
@@ -158,33 +190,43 @@ func readLines(r io.Reader) ([]parsedLine, []Diagnostic, int, error) {
 		}
 		lines = append(lines, parsedLine{
 			line:     lineNum,
-			raw:      append([]byte(nil), line...),
+			raw:      line,
 			envelope: env,
 		})
-	}
-	if err := scanner.Err(); err != nil {
-		return lines, diagnostics, inputRecords, fmt.Errorf("scan error: %w", err)
+		if reachedEOF {
+			break
+		}
 	}
 	return lines, diagnostics, inputRecords, nil
+}
+
+func bytesTrimLineEnding(line []byte) []byte {
+	if len(line) > 0 && line[len(line)-1] == '\n' {
+		line = line[:len(line)-1]
+	}
+	if len(line) > 0 && line[len(line)-1] == '\r' {
+		line = line[:len(line)-1]
+	}
+	return line
 }
 
 func detectProvider(lines []parsedLine) (Provider, error) {
 	for _, line := range lines {
 		env := line.envelope
-		if len(env.Payload) > 0 {
+		if env.Payload {
 			switch env.Type {
 			case "session_meta", "response_item", "event_msg":
 				return ProviderCodex, nil
 			}
 		}
-		if len(env.Message) > 0 && (env.Type == "user" || env.Type == "assistant") {
+		if env.Message && (env.Type == "user" || env.Type == "assistant") {
 			return ProviderClaude, nil
 		}
 	}
 	return "", fmt.Errorf("could not detect transcript provider")
 }
 
-func parseClaudeLines(lines []parsedLine) *Result {
+func parseClaudeLines(lines []parsedLine, opts ParseOptions) *Result {
 	result := &Result{Provider: ProviderClaude}
 	for _, line := range lines {
 		rec, err := parseLine(line.raw)
@@ -196,6 +238,14 @@ func parseClaudeLines(lines []parsedLine) *Result {
 		rec.Provider = ProviderClaude
 		if rec.Message != nil {
 			rec.Role = rec.Message.Role
+			if opts.Images {
+				images, imageErr := extractImages(rec.Message.Content)
+				if imageErr != nil {
+					result.Diagnostics = append(result.Diagnostics, Diagnostic{Line: line.line, Message: imageErr.Error(), Strict: true})
+				} else {
+					rec.Images = normalizeImages(images, line.line, result)
+				}
+			}
 		}
 		if rec.Role == "" {
 			rec.Role = rec.Type
@@ -214,14 +264,4 @@ func parseLine(line []byte) (*Record, error) {
 		return nil, fmt.Errorf("json unmarshal: %w", err)
 	}
 	return &rec, nil
-}
-
-func writeDiagnostics(w io.Writer, diagnostics []Diagnostic) {
-	for _, diagnostic := range diagnostics {
-		if diagnostic.Line > 0 {
-			fmt.Fprintf(w, "warning: line %d: %s\n", diagnostic.Line, diagnostic.Message)
-		} else {
-			fmt.Fprintf(w, "warning: %s\n", diagnostic.Message)
-		}
-	}
 }

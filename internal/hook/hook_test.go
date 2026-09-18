@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -538,6 +539,32 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHookSessionID(t *testi
 	attachment := filepath.Join(outDir, "codex-project", "attachments_2026-09-17_hook-session-id", "image_001.png")
 	if _, err := os.Stat(attachment); err != nil {
 		t.Fatalf("Codex image missing: %v", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		blockedOutDir := t.TempDir()
+		projectDir := filepath.Join(blockedOutDir, "codex-project")
+		if err := os.Mkdir(projectDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		realDir := filepath.Join(blockedOutDir, "real")
+		if err := os.Mkdir(realDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		attachmentsDir := filepath.Join(projectDir, "attachments_2026-09-17_hook-session-id")
+		if err := os.Symlink(realDir, attachmentsDir); err != nil {
+			t.Fatal(err)
+		}
+
+		cmd := exec.Command(binPath, "hook", "-provider", "codex", "-project", "codex-project", "-images", "-dir", blockedOutDir)
+		cmd.Stdin = strings.NewReader(string(stdinBytes))
+		if output, err := cmd.CombinedOutput(); err == nil {
+			t.Fatalf("hook succeeded with a symlinked attachments directory:\n%s", output)
+		}
+		markdownPath := filepath.Join(projectDir, "2026-09-17_hook-session-id.md")
+		if _, err := os.Stat(markdownPath); !os.IsNotExist(err) {
+			t.Fatalf("hook published Markdown despite image save failure: %v", err)
+		}
 	}
 }
 

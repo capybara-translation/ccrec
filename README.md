@@ -4,13 +4,13 @@ A CLI tool that converts Claude Code and Codex conversation transcripts (JSONL) 
 
 ## Features
 
-- **Line-oriented parser** — Scans JSONL with a 16 MB per-record limit and skips malformed lines without discarding the rest of the transcript.
+- **Line-oriented parser** — Scans JSONL with a 16 MiB per-record limit and skips malformed or over-limit lines without discarding the rest of the transcript.
 - **Smart filtering** — Strips system messages, metadata, API errors, interrupted requests, and empty messages by default.
 - **HTML-safe output** — Escapes HTML tags outside fenced code blocks, preventing Markdown renderers from misinterpreting raw HTML in conversation content.
 - **Tool use summaries** — Optionally includes concise summaries of tool calls (file paths, commands, grep patterns).
 - **Image extraction** — Optionally decodes and saves base64-encoded images from transcripts.
 - **Claude Code hook integration** — Runs as a Stop/SessionEnd hook to automatically save conversations to a directory (e.g., an Obsidian vault).
-- **Codex hook integration** — Saves the visible conversation from a Codex `SessionEnd` hook without exporting injected instructions or reasoning.
+- **Codex hook integration** — Runs as a Stop/SessionEnd hook without exporting injected instructions or reasoning.
 
 ## Installation
 
@@ -83,9 +83,13 @@ Codex commonly stores local session transcripts under:
 
 Codex exposes `transcript_path` to hooks. Its transcript JSON format is not a stable hook interface, so ccrec uses conservative parsing and regression fixtures for supported formats.
 
-For Codex, ccrec selects exactly one visible-message source family to avoid duplicates: current `item_completed` events first, legacy or subagent `user_message` / `agent_message` events second, and `response_item` records only as a fallback. In the fallback path, user content is exported only when metadata explicitly marks it as `user.text` or `user.image`; older transcripts without that visibility metadata cannot safely reconstruct those user messages. Injected instructions, environment data, plugin metadata, permissions, reasoning, and tool output are not exported as conversation text.
+For Codex, ccrec selects exactly one visible-message source family to avoid duplicates: current `item_completed` events first, alternate or subagent `user_message` / `agent_message` events second, and `response_item` records only as a fallback. In the fallback path, user content is exported only when metadata explicitly marks it as `user.text` or `user.image`; older transcripts without that visibility metadata cannot safely reconstruct those user messages. Injected instructions, environment data, plugin metadata, permissions, reasoning, and tool output are not exported as conversation text.
 
 With `-images`, Codex images are decoded only from embedded `user.image` data and associated with the corresponding visible `item_completed` message by turn ID and message order. ccrec never reads the `local_image.path` recorded in the transcript, because a modified transcript could otherwise copy an unrelated local file. The decoded bytes are checked against the declared PNG, JPEG, GIF, or WebP media type before being written.
+
+Image association requires `content_item_kinds` metadata. In observed rollouts it was absent through Codex 0.145.0 and present in 0.155.0-alpha; versions 0.146–0.154 were not observed. Without that metadata, images cannot be associated, and `-strict -images` fails if the visible message contains unmatched local-image markers. The observed compaction samples had no association mismatch, but compaction and fork behavior has not been exhaustively verified.
+
+Parsing memory grows with transcript size. The parser retains roughly two copies of the JSONL data before Go runtime overhead; decoded image bytes add further memory only when `-images` is enabled.
 
 Session IDs are selected in this order: hook input, Codex session metadata, transcript filename, then a stable path-derived fallback. Unsafe filename characters are normalized and hashed.
 
@@ -120,14 +124,16 @@ entities (nodes) and relationships (edges)...
 | `-all`      | Disable filtering; include all messages  |
 | `-images`   | Extract and embed images (requires `-o`)  |
 | `-provider <name>` | Input provider: `auto`, `claude`, or `codex` |
-| `-strict` | Fail if messages cannot be extracted safely |
+| `-strict` | Fail if messages or requested images cannot be extracted safely, or if an over-limit record is skipped |
 
-When `-o` is used, ccrec writes a complete same-directory temporary file and atomically replaces the destination with mode `0600`; directories it creates use `0700`. A destination symlink is replaced rather than followed, so its target is unchanged. Concurrent writers publish one complete result, but the last rename wins. A process killed before cleanup may leave a `.tmp-*` file, and the containing directory is not fsynced.
+When `-o` is used, ccrec writes complete same-directory temporary files and atomically replaces the Markdown and image destinations with mode `0600`; directories it creates use `0700`, while existing directory modes are unchanged. A destination symlink is replaced rather than followed, and an attachments-directory symlink is rejected. An image save failure aborts the Markdown replacement. Concurrent writers publish one complete result, but the last rename wins. A process killed before cleanup may leave a `.tmp-*` file, and containing directories are not fsynced.
 
 ## Breaking changes in Codex support
 
 - Conversation order now follows JSONL source order for both providers. Sessions whose timestamps move backwards can differ from older ccrec output; equal timestamps previously did not guarantee source order.
 - Hook output names now use the complete collision-resistant session ID instead of the first eight characters. Existing short-ID files remain untouched, so an in-progress session spanning the upgrade can leave both names; rename or remove the older file manually if desired.
+- With `-all`, records that have neither renderable text nor requested images are no longer counted or emitted as empty message headings.
+- Claude Code image-only user messages are now emitted when `-images` is enabled.
 
 ## Claude Code Hook Integration
 
@@ -235,7 +241,9 @@ Add the following to `~/.codex/hooks.json`, replacing the executable, repository
 
 Replace `/path/to/ccrec` with the absolute path to the installed binary. The example repository and output paths must also be replaced with absolute paths for your environment. You may configure either event instead of both. Codex limits `SessionEnd` command hooks to three seconds, so verify that image extraction completes within that limit for your transcript sizes; remove `-images` from that event if necessary.
 
-New or changed non-managed hooks must be reviewed and trusted before Codex runs them. Open `/hooks` in Codex to review the definition. The hook uses the supplied `session_id`, `transcript_path`, and `cwd`, writes the Markdown atomically, and uses owner-only permissions (`0600` files and `0700` directories). A null, empty, or missing transcript path is treated as a successful no-op.
+New or changed non-managed hooks must be reviewed and trusted before Codex runs them. Open `/hooks` in Codex to review the definition. The hook uses the supplied `session_id`, `transcript_path`, and `cwd`, writes the Markdown atomically, creates files with mode `0600` and new directories with mode `0700`, and leaves existing directory modes unchanged. A null, empty, or missing transcript path is treated as a successful no-op.
+
+Warnings are written to stderr, but Codex and Claude Code normally do not surface stderr when a hook exits successfully. A Codex subagent rollout can also contain no visible-message events and therefore fail with `-strict`; Codex `Stop` and `SessionEnd` hooks do not run for subagents.
 
 ## Testing
 

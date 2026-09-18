@@ -57,4 +57,5 @@ type ImageSource struct {
 	Type      string `json:"type"`
 	MediaType string `json:"media_type"`
 	Data      string `json:"data"`
+	Bytes     []byte `json:"-"`
 }

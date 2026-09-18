@@ -23,8 +23,9 @@ type HookInput struct {
 	TranscriptPath string `json:"transcript_path"`
 	StopHookActive bool   `json:"stop_hook_active"`
 	CWD            string `json:"cwd"`
-	HookEventName  string `json:"hook_event_name"`
-	Model          string `json:"model"`
+	// Official hook input fields retained for future event/model-specific behavior.
+	HookEventName string `json:"hook_event_name"`
+	Model         string `json:"model"`
 }
 
 var uuidPattern = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
@@ -110,7 +111,7 @@ func Run(args []string) {
 	// Parse transcript. A missing file is not an error: with
 	// --no-session-persistence, Claude Code passes a transcript_path
 	// that was never written.
-	result, err := parser.ParseFileWithOptions(input.TranscriptPath, parser.ParseOptions{Provider: provider, Strict: *strict})
+	result, err := parser.ParseFileWithOptions(input.TranscriptPath, parser.ParseOptions{Provider: provider, Strict: *strict, Images: *images})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return

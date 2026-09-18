@@ -53,13 +53,13 @@ func shouldInclude(rec *parser.Record, includeToolUse, includeImages bool) bool 
 		return false
 	}
 
-	if rec.Message == nil && rec.Text == "" && (!includeImages || !hasValidImage(rec)) {
+	if rec.Message == nil && rec.Text == "" && (!includeImages || len(rec.Images) == 0) {
 		return false
 	}
 
 	text := recordText(rec, includeToolUse)
 	trimmed := strings.TrimSpace(text)
-	if trimmed == "" && (!includeImages || !hasValidImage(rec)) {
+	if trimmed == "" && (!includeImages || len(rec.Images) == 0) {
 		return false
 	}
 
@@ -81,25 +81,6 @@ func shouldInclude(rec *parser.Record, includeToolUse, includeImages bool) bool 
 	}
 
 	return true
-}
-
-func hasValidImage(rec *parser.Record) bool {
-	for _, image := range recordImages(rec) {
-		if _, _, err := decodeAndValidateImage(image); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-func recordImages(rec *parser.Record) []parser.ImageSource {
-	if len(rec.Images) > 0 {
-		return rec.Images
-	}
-	if rec.Message == nil {
-		return nil
-	}
-	return parser.ExtractImages(rec.Message.Content)
 }
 
 func recordText(rec *parser.Record, includeToolUse bool) string {

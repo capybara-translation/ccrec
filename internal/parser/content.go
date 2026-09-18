@@ -1,7 +1,11 @@
 package parser
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 )
@@ -78,24 +82,80 @@ func ExtractTextWithToolUse(content json.RawMessage) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// ExtractImages extracts image blocks from a message's content field.
-func ExtractImages(content json.RawMessage) []ImageSource {
+func extractImages(content json.RawMessage) ([]ImageSource, error) {
 	if len(content) == 0 {
-		return nil
+		return nil, nil
+	}
+	trimmed := bytes.TrimSpace(content)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, nil
 	}
 
 	var blocks []ContentBlock
 	if err := json.Unmarshal(content, &blocks); err != nil {
-		return nil
+		return nil, fmt.Errorf("decode image content: %w", err)
 	}
 
 	var images []ImageSource
 	for _, b := range blocks {
-		if b.Type == "image" && b.Source != nil && b.Source.Data != "" {
+		if b.Type != "image" {
+			continue
+		}
+		if b.Source == nil {
+			images = append(images, ImageSource{})
+		} else {
 			images = append(images, *b.Source)
 		}
 	}
-	return images
+	return images, nil
+}
+
+func validateImageSource(image ImageSource) (ImageSource, error) {
+	if image.Type == "" && image.MediaType == "" && image.Data == "" {
+		return ImageSource{}, fmt.Errorf("missing image source")
+	}
+	if image.Type != "base64" {
+		return ImageSource{}, fmt.Errorf("unsupported image source type %q", image.Type)
+	}
+	if image.Data == "" {
+		return ImageSource{}, fmt.Errorf("empty image data")
+	}
+	data, err := base64.StdEncoding.DecodeString(image.Data)
+	if err != nil {
+		return ImageSource{}, fmt.Errorf("decode base64 image: %w", err)
+	}
+	detectedType := http.DetectContentType(data)
+	if !supportedImageMediaType(detectedType) {
+		return ImageSource{}, fmt.Errorf("unsupported image data type %q", detectedType)
+	}
+	if image.MediaType != detectedType {
+		return ImageSource{}, fmt.Errorf("image media type mismatch: declared %q, detected %q", image.MediaType, detectedType)
+	}
+	image.Data = ""
+	image.Bytes = data
+	return image, nil
+}
+
+func supportedImageMediaType(mediaType string) bool {
+	switch mediaType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeImages(images []ImageSource, line int, result *Result) []ImageSource {
+	normalized := make([]ImageSource, 0, len(images))
+	for _, image := range images {
+		validated, err := validateImageSource(image)
+		if err != nil {
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Line: line, Message: err.Error(), Strict: true})
+			continue
+		}
+		normalized = append(normalized, validated)
+	}
+	return normalized
 }
 
 // stripSystemTags removes <local-command-stdout> tags from text, keeping the content inside.

@@ -49,7 +49,7 @@ type codexImageQueue struct {
 	ambiguous map[string]bool
 }
 
-func parseCodexLines(lines []parsedLine) *Result {
+func parseCodexLines(lines []parsedLine, opts ParseOptions) *Result {
 	result := &Result{Provider: ProviderCodex}
 	records := make([]codexRecord, len(lines))
 
@@ -58,6 +58,7 @@ func parseCodexLines(lines []parsedLine) *Result {
 	for i, line := range lines {
 		if err := json.Unmarshal(line.raw, &records[i]); err != nil {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Line: line.line, Message: err.Error() + " (skipped)"})
+			records[i] = codexRecord{}
 			continue
 		}
 		record := records[i]
@@ -84,7 +85,7 @@ func parseCodexLines(lines []parsedLine) *Result {
 		}
 	}
 	var images *codexImageQueue
-	if hasCurrentVisibleEvents {
+	if hasCurrentVisibleEvents && opts.Images {
 		images = newCodexImageQueue(records, lines, result)
 	}
 
@@ -93,11 +94,11 @@ func parseCodexLines(lines []parsedLine) *Result {
 		var normalized *Record
 		switch {
 		case hasCurrentVisibleEvents:
-			normalized = normalizeCurrentCodexEvent(record, line.line, result, images)
+			normalized = normalizeCurrentCodexEvent(record, line.line, result, images, opts.Images)
 		case hasLegacyVisibleEvents:
 			normalized = normalizeLegacyCodexEvent(record, line.line, result)
 		default:
-			normalized = normalizeCodexResponse(record, line.line, result)
+			normalized = normalizeCodexResponse(record, line.line, result, opts.Images)
 		}
 		if normalized != nil {
 			result.Records = append(result.Records, normalized)
@@ -108,7 +109,7 @@ func parseCodexLines(lines []parsedLine) *Result {
 	return result
 }
 
-func normalizeCurrentCodexEvent(record codexRecord, line int, result *Result, images *codexImageQueue) *Record {
+func normalizeCurrentCodexEvent(record codexRecord, line int, result *Result, images *codexImageQueue, includeImages bool) *Record {
 	if record.Type != "event_msg" || record.Payload.Type != "item_completed" || record.Payload.Item == nil {
 		return nil
 	}
@@ -124,7 +125,7 @@ func normalizeCurrentCodexEvent(record codexRecord, line int, result *Result, im
 		return nil
 	}
 	var normalizedImages []ImageSource
-	if role == "user" {
+	if role == "user" && includeImages {
 		expectedImages := countCodexContentType(item.Content, "local_image")
 		queuedImages, found := images.pop(record.Payload.TurnID)
 		switch {
@@ -132,7 +133,7 @@ func normalizeCurrentCodexEvent(record codexRecord, line int, result *Result, im
 		case !found || len(queuedImages) != expectedImages:
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{
 				Line:    line,
-				Message: fmt.Sprintf("skipped %d Codex local image(s) without matching embedded user.image data", expectedImages),
+				Message: fmt.Sprintf("Codex image count mismatch: expected %d local image(s), found %d embedded user.image(s)", expectedImages, len(queuedImages)),
 				Strict:  true,
 			})
 		default:
@@ -160,7 +161,7 @@ func normalizeLegacyCodexEvent(record codexRecord, line int, result *Result) *Re
 	return newNormalizedRecord(role, record.Payload.Phase, text, nil, record.Timestamp, line, result)
 }
 
-func normalizeCodexResponse(record codexRecord, line int, result *Result) *Record {
+func normalizeCodexResponse(record codexRecord, line int, result *Result, includeImages bool) *Record {
 	if record.Type != "response_item" || record.Payload.Type != "message" {
 		return nil
 	}
@@ -191,7 +192,10 @@ func normalizeCodexResponse(record codexRecord, line int, result *Result) *Recor
 			}
 			return nil
 		}
-		images := imagesFromVisibleUserContent(record.Payload.Content, kinds, line, result)
+		var images []ImageSource
+		if includeImages {
+			images = imagesFromVisibleUserContent(record.Payload.Content, kinds, line, result)
+		}
 		return newNormalizedRecord("user", PhaseNone, textFromVisibleUserContent(record.Payload.Content, kinds), images, record.Timestamp, line, result)
 	case "assistant":
 		return newNormalizedRecord("assistant", record.Payload.Phase, textFromCodexContent(record.Payload.Content, "output_text"), nil, record.Timestamp, line, result)
@@ -205,7 +209,6 @@ func newNormalizedRecord(role string, phase Phase, text string, images []ImageSo
 	if text == "" && len(images) == 0 {
 		return nil
 	}
-	content, _ := json.Marshal(text)
 	record := &Record{
 		Type:     role,
 		Role:     role,
@@ -214,10 +217,6 @@ func newNormalizedRecord(role string, phase Phase, text string, images []ImageSo
 		Provider: ProviderCodex,
 		Text:     text,
 		Images:   images,
-		Message: &Message{
-			Role:    role,
-			Content: content,
-		},
 	}
 	if timestamp == "" {
 		return record
@@ -289,7 +288,12 @@ func imagesFromVisibleUserContent(content []codexContent, kinds []string, line i
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Line: line, Message: err.Error(), Strict: true})
 			continue
 		}
-		images = append(images, image)
+		validated, err := validateImageSource(image)
+		if err != nil {
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Line: line, Message: err.Error(), Strict: true})
+			continue
+		}
+		images = append(images, validated)
 	}
 	return images
 }
@@ -300,12 +304,7 @@ func imageSourceFromDataURL(value string) (ImageSource, error) {
 		return ImageSource{}, fmt.Errorf("invalid Codex user.image data URL")
 	}
 	mediaType := strings.TrimSuffix(strings.TrimPrefix(header, "data:"), ";base64")
-	switch mediaType {
-	case "image/png", "image/jpeg", "image/gif", "image/webp":
-		return ImageSource{Type: "base64", MediaType: mediaType, Data: data}, nil
-	default:
-		return ImageSource{}, fmt.Errorf("unsupported Codex user.image media type %q", mediaType)
-	}
+	return ImageSource{Type: "base64", MediaType: mediaType, Data: data}, nil
 }
 
 func countCodexContentType(content []codexContent, target string) int {

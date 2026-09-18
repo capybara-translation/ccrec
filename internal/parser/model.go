@@ -24,6 +24,7 @@ const (
 type ParseOptions struct {
 	Provider Provider
 	Strict   bool
+	Images   bool
 }
 
 // Diagnostic describes a recoverable transcript issue.

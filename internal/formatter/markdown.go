@@ -1,17 +1,17 @@
 package formatter
 
 import (
-	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/capybara-translation/ccrec/internal/parser"
+	"github.com/capybara-translation/ccrec/internal/safefile"
 )
 
 // Options controls the Markdown output.
@@ -86,6 +86,7 @@ func FormatMarkdown(w io.Writer, records []*parser.Record, opts Options) error {
 	if !opts.IncludeAll {
 		visible = FilterRecordsWithImages(visible, opts.IncludeToolUse, opts.IncludeImages)
 	}
+	visible = renderableRecords(visible, opts)
 
 	// Header.
 	fmt.Fprintln(w, "# Conversation Log")
@@ -105,6 +106,18 @@ func FormatMarkdown(w io.Writer, records []*parser.Record, opts Options) error {
 	}
 
 	return checked.err
+}
+
+func renderableRecords(records []*parser.Record, opts Options) []*parser.Record {
+	visible := make([]*parser.Record, 0, len(records))
+	for _, rec := range records {
+		text := strings.TrimSpace(recordText(rec, opts.IncludeToolUse))
+		hasImages := opts.IncludeImages && opts.AttachmentsDir != "" && len(rec.Images) > 0
+		if text != "" || hasImages {
+			visible = append(visible, rec)
+		}
+	}
+	return visible
 }
 
 // checkedWriter remembers the first write error so callers cannot accidentally
@@ -140,13 +153,11 @@ func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *i
 	// Extract images if enabled.
 	var imagePaths []string
 	if opts.IncludeImages && opts.AttachmentsDir != "" {
-		images := recordImages(rec)
-		for _, img := range images {
+		for _, img := range rec.Images {
 			*imageCounter++
 			path, err := saveImage(opts.AttachmentsDir, *imageCounter, img)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to save image: %v\n", err)
-				continue
+				return fmt.Errorf("save image: %w", err)
 			}
 			imagePaths = append(imagePaths, path)
 		}
@@ -182,29 +193,29 @@ func writeMessage(w io.Writer, rec *parser.Record, opts Options, imageCounter *i
 	return nil
 }
 
-// saveImage decodes a base64 image and saves it to the attachments directory.
-// Returns the relative path for Markdown reference.
+// saveImage atomically saves parser-validated bytes and returns the relative
+// path for the Markdown reference.
 func saveImage(attachmentsDir string, index int, img parser.ImageSource) (string, error) {
-	data, ext, err := decodeAndValidateImage(img)
-	if err != nil {
-		return "", err
+	if len(img.Bytes) == 0 {
+		return "", fmt.Errorf("image data was not validated by parser")
+	}
+	ext, ok := imageExtension(img.MediaType)
+	if !ok {
+		return "", fmt.Errorf("unsupported image media type %q", img.MediaType)
 	}
 
-	if err := os.MkdirAll(attachmentsDir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir %s: %w", attachmentsDir, err)
-	}
-	if err := os.Chmod(attachmentsDir, 0o700); err != nil {
-		return "", fmt.Errorf("chmod %s: %w", attachmentsDir, err)
+	if err := ensureAttachmentsDir(attachmentsDir); err != nil {
+		return "", err
 	}
 
 	fileName := fmt.Sprintf("image_%03d%s", index, ext)
 	filePath := filepath.Join(attachmentsDir, fileName)
 
-	if err := os.WriteFile(filePath, data, 0o600); err != nil {
+	if err := safefile.Write(filePath, 0o600, func(w io.Writer) error {
+		_, err := w.Write(img.Bytes)
+		return err
+	}); err != nil {
 		return "", fmt.Errorf("write %s: %w", filePath, err)
-	}
-	if err := os.Chmod(filePath, 0o600); err != nil {
-		return "", fmt.Errorf("chmod %s: %w", filePath, err)
 	}
 
 	// Return relative path for Markdown reference.
@@ -212,21 +223,24 @@ func saveImage(attachmentsDir string, index int, img parser.ImageSource) (string
 	return dirName + "/" + fileName, nil
 }
 
-func decodeAndValidateImage(img parser.ImageSource) ([]byte, string, error) {
-	data, err := base64.StdEncoding.DecodeString(img.Data)
+func ensureAttachmentsDir(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return fmt.Errorf("mkdir %s: %w", path, err)
+		}
+		info, err = os.Lstat(path)
+	}
 	if err != nil {
-		return nil, "", fmt.Errorf("decode base64: %w", err)
+		return fmt.Errorf("inspect attachments directory %s: %w", path, err)
 	}
-
-	detectedType := http.DetectContentType(data)
-	ext, ok := imageExtension(detectedType)
-	if !ok {
-		return nil, "", fmt.Errorf("unsupported image data type %q", detectedType)
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("attachments directory %s is a symlink", path)
 	}
-	if img.MediaType != detectedType {
-		return nil, "", fmt.Errorf("image media type mismatch: declared %q, detected %q", img.MediaType, detectedType)
+	if !info.IsDir() {
+		return fmt.Errorf("attachments path %s is not a directory", path)
 	}
-	return data, ext, nil
+	return nil
 }
 
 func imageExtension(mediaType string) (string, bool) {

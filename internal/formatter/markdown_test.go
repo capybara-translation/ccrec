@@ -2,11 +2,13 @@ package formatter
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,14 @@ import (
 )
 
 const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+
+func tinyPNGImage() parser.ImageSource {
+	data, err := base64.StdEncoding.DecodeString(tinyPNGBase64)
+	if err != nil {
+		panic(err)
+	}
+	return parser.ImageSource{Type: "base64", MediaType: "image/png", Bytes: data}
+}
 
 func TestFormatMarkdown_BasicOutput(t *testing.T) {
 	ts := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
@@ -436,7 +446,7 @@ func TestSaveImage_UsesPrivatePermissions(t *testing.T) {
 	if err := os.WriteFile(oldImage, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := saveImage(attachments, 1, parser.ImageSource{MediaType: "image/png", Data: tinyPNGBase64})
+	_, err := saveImage(attachments, 1, tinyPNGImage())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,8 +454,8 @@ func TestSaveImage_UsesPrivatePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := dirInfo.Mode().Perm(); got != 0o700 {
-		t.Fatalf("attachments mode = %o, want 700", got)
+	if got := dirInfo.Mode().Perm(); got != 0o755 {
+		t.Fatalf("existing attachments mode = %o, want 755", got)
 	}
 	fileInfo, err := os.Stat(filepath.Join(attachments, "image_001.png"))
 	if err != nil {
@@ -456,6 +466,101 @@ func TestSaveImage_UsesPrivatePermissions(t *testing.T) {
 	}
 }
 
+func TestSaveImage_CreatesPrivateAttachmentsDirectory(t *testing.T) {
+	attachments := filepath.Join(t.TempDir(), "attachments")
+	if _, err := saveImage(attachments, 1, tinyPNGImage()); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(attachments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("new attachments mode = %o, want 700", got)
+	}
+}
+
+func TestSaveImage_ReplacesFileSymlinkWithoutFollowingIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges on Windows")
+	}
+	root := t.TempDir()
+	attachments := filepath.Join(root, "attachments")
+	if err := os.Mkdir(attachments, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "sensitive.txt")
+	if err := os.WriteFile(target, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(attachments, "image_001.png")
+	if err := os.Symlink(target, imagePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := saveImage(attachments, 1, tinyPNGImage()); err != nil {
+		t.Fatal(err)
+	}
+	targetData, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(targetData) != "unchanged" {
+		t.Fatalf("symlink target was overwritten: %q", targetData)
+	}
+	info, err := os.Lstat(imagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("image output remained a symlink")
+	}
+}
+
+func TestSaveImage_RejectsAttachmentsDirectorySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges on Windows")
+	}
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	attachments := filepath.Join(root, "attachments")
+	if err := os.Symlink(realDir, attachments); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := saveImage(attachments, 1, tinyPNGImage()); err == nil {
+		t.Fatal("attachments directory symlink should be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(realDir, "image_001.png")); !os.IsNotExist(err) {
+		t.Fatalf("image was written through directory symlink: %v", err)
+	}
+}
+
+func TestFormatMarkdown_PropagatesImageSaveFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges on Windows")
+	}
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	attachments := filepath.Join(root, "attachments")
+	if err := os.Symlink(realDir, attachments); err != nil {
+		t.Fatal(err)
+	}
+	record := &parser.Record{Type: "user", Role: "user", Images: []parser.ImageSource{tinyPNGImage()}}
+
+	var output bytes.Buffer
+	err := FormatMarkdown(&output, []*parser.Record{record}, Options{IncludeImages: true, AttachmentsDir: attachments})
+	if err == nil {
+		t.Fatal("image save failure should be returned")
+	}
+}
+
 func TestFormatMarkdown_SavesNormalizedCodexImages(t *testing.T) {
 	attachments := filepath.Join(t.TempDir(), "attachments")
 	record := &parser.Record{
@@ -463,7 +568,7 @@ func TestFormatMarkdown_SavesNormalizedCodexImages(t *testing.T) {
 		Role:     "user",
 		Provider: parser.ProviderCodex,
 		Text:     "with image",
-		Images:   []parser.ImageSource{{MediaType: "image/png", Data: tinyPNGBase64}},
+		Images:   []parser.ImageSource{tinyPNGImage()},
 	}
 
 	var buf bytes.Buffer
@@ -478,12 +583,35 @@ func TestFormatMarkdown_SavesNormalizedCodexImages(t *testing.T) {
 	}
 }
 
+func TestFormatMarkdown_SavesClaudeImageNormalizedByParser(t *testing.T) {
+	transcript := filepath.Join(t.TempDir(), "claude.jsonl")
+	content := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"with image"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + tinyPNGBase64 + `"}}]},"timestamp":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(transcript, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := parser.ParseFileWithOptions(transcript, parser.ParseOptions{Provider: parser.ProviderClaude, Strict: true, Images: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachments := filepath.Join(t.TempDir(), "attachments")
+	var output bytes.Buffer
+	if err := FormatMarkdown(&output, result.Records, Options{IncludeImages: true, AttachmentsDir: attachments}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "![image](attachments/image_001.png)") {
+		t.Fatalf("normalized Claude image missing:\n%s", output.String())
+	}
+	if _, err := os.Stat(filepath.Join(attachments, "image_001.png")); err != nil {
+		t.Fatalf("saved Claude image missing: %v", err)
+	}
+}
+
 func TestFormatMarkdown_IncludesImageOnlyRecordOnlyWhenImagesEnabled(t *testing.T) {
 	record := &parser.Record{
 		Type:     "user",
 		Role:     "user",
 		Provider: parser.ProviderCodex,
-		Images:   []parser.ImageSource{{MediaType: "image/png", Data: tinyPNGBase64}},
+		Images:   []parser.ImageSource{tinyPNGImage()},
 	}
 
 	var withoutImages bytes.Buffer
@@ -509,7 +637,7 @@ func TestFormatMarkdown_DoesNotIncludeImageOnlyRecordWithAllButWithoutImages(t *
 		Type:     "user",
 		Role:     "user",
 		Provider: parser.ProviderCodex,
-		Images:   []parser.ImageSource{{MediaType: "image/png", Data: tinyPNGBase64}},
+		Images:   []parser.ImageSource{tinyPNGImage()},
 	}
 
 	var output bytes.Buffer
@@ -521,68 +649,31 @@ func TestFormatMarkdown_DoesNotIncludeImageOnlyRecordWithAllButWithoutImages(t *
 	}
 }
 
-func TestFormatMarkdown_WritesValidImagesAndSkipsInvalidImages(t *testing.T) {
-	attachments := filepath.Join(t.TempDir(), "attachments")
-	record := &parser.Record{
-		Type:     "user",
-		Role:     "user",
-		Provider: parser.ProviderCodex,
-		Images: []parser.ImageSource{
-			{MediaType: "image/png", Data: tinyPNGBase64},
-			{MediaType: "image/png", Data: "bm90IGFuIGltYWdl"},
-		},
+func TestFormatMarkdown_MessageCountMatchesRenderedHeadingsWithAll(t *testing.T) {
+	records := []*parser.Record{
+		{Type: "user", Role: "user"},
+		{Type: "assistant", Role: "assistant", Text: "rendered"},
 	}
 
 	var output bytes.Buffer
-	if err := FormatMarkdown(&output, []*parser.Record{record}, Options{IncludeImages: true, AttachmentsDir: attachments}); err != nil {
+	if err := FormatMarkdown(&output, records, Options{IncludeAll: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(output.String(), "![image]"); got != 1 {
-		t.Fatalf("rendered %d images, want 1:\n%s", got, output.String())
+	if !strings.Contains(output.String(), "**Messages:** 1") {
+		t.Fatalf("message count does not match rendered output:\n%s", output.String())
 	}
-	if _, err := os.Stat(filepath.Join(attachments, "image_001.png")); err != nil {
-		t.Fatalf("valid image missing: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(attachments, "image_002.png")); !os.IsNotExist(err) {
-		t.Fatalf("invalid image was written: %v", err)
+	if got := strings.Count(output.String(), "## "); got != 1 {
+		t.Fatalf("rendered %d headings, want 1:\n%s", got, output.String())
 	}
 }
 
-func TestFormatMarkdown_ExcludesInvalidImageOnlyRecord(t *testing.T) {
-	record := &parser.Record{
-		Type:     "user",
-		Role:     "user",
-		Provider: parser.ProviderCodex,
-		Images:   []parser.ImageSource{{MediaType: "image/png", Data: "bm90IGFuIGltYWdl"}},
-	}
-
-	var output bytes.Buffer
-	if err := FormatMarkdown(&output, []*parser.Record{record}, Options{IncludeImages: true, AttachmentsDir: t.TempDir()}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), "**Messages:** 0") || strings.Contains(output.String(), "## User") {
-		t.Fatalf("invalid image-only record was counted:\n%s", output.String())
-	}
-}
-
-func TestSaveImage_RejectsNonImageData(t *testing.T) {
+func TestSaveImage_RejectsUnvalidatedImage(t *testing.T) {
 	attachments := filepath.Join(t.TempDir(), "attachments")
-	_, err := saveImage(attachments, 1, parser.ImageSource{MediaType: "image/png", Data: "bm90IGFuIGltYWdl"})
+	_, err := saveImage(attachments, 1, parser.ImageSource{MediaType: "image/png", Data: tinyPNGBase64})
 	if err == nil {
-		t.Fatal("non-image payload should be rejected")
+		t.Fatal("unvalidated image should be rejected")
 	}
 	if _, statErr := os.Stat(filepath.Join(attachments, "image_001.png")); !os.IsNotExist(statErr) {
-		t.Fatalf("invalid image was written: %v", statErr)
-	}
-}
-
-func TestSaveImage_RejectsMediaTypeMismatch(t *testing.T) {
-	attachments := filepath.Join(t.TempDir(), "attachments")
-	_, err := saveImage(attachments, 1, parser.ImageSource{MediaType: "image/jpeg", Data: tinyPNGBase64})
-	if err == nil {
-		t.Fatal("media type mismatch should be rejected")
-	}
-	if _, statErr := os.Stat(filepath.Join(attachments, "image_001.jpg")); !os.IsNotExist(statErr) {
-		t.Fatalf("mismatched image was written: %v", statErr)
+		t.Fatalf("unvalidated image was written: %v", statErr)
 	}
 }

@@ -34,12 +34,11 @@ func TestParseFileWithOptions_CodexFixture(t *testing.T) {
 	}
 	for i, want := range wants {
 		got := result.Records[i]
-		text := ExtractText(got.Message.Content)
-		if got.Role != want.role || got.Phase != want.phase || text != want.text {
-			t.Errorf("record %d = (%q, %q, %q), want (%q, %q, %q)", i, got.Role, got.Phase, text, want.role, want.phase, want.text)
+		if got.Role != want.role || got.Phase != want.phase || got.Text != want.text {
+			t.Errorf("record %d = (%q, %q, %q), want (%q, %q, %q)", i, got.Role, got.Phase, got.Text, want.role, want.phase, want.text)
 		}
-		if strings.Contains(text, "SECRET") {
-			t.Errorf("record %d leaked non-visible content: %q", i, text)
+		if strings.Contains(got.Text, "SECRET") {
+			t.Errorf("record %d leaked non-visible content: %q", i, got.Text)
 		}
 	}
 }
@@ -63,8 +62,8 @@ func TestParseFileWithOptions_CodexLegacyFixture(t *testing.T) {
 	}
 	for i, want := range wants {
 		got := result.Records[i]
-		if text := ExtractText(got.Message.Content); got.Role != want.role || got.Phase != want.phase || text != want.text {
-			t.Errorf("record %d = (%q, %q, %q), want (%q, %q, %q)", i, got.Role, got.Phase, text, want.role, want.phase, want.text)
+		if got.Role != want.role || got.Phase != want.phase || got.Text != want.text {
+			t.Errorf("record %d = (%q, %q, %q), want (%q, %q, %q)", i, got.Role, got.Phase, got.Text, want.role, want.phase, want.text)
 		}
 	}
 }
@@ -121,9 +120,9 @@ func TestParseReaderWithOptions_CodexPrefersCurrentVisibleEvents(t *testing.T) {
 	}
 	for i, want := range wants {
 		rec := result.Records[i]
-		if rec.Role != want.role || ExtractText(rec.Message.Content) != want.text || rec.Phase != want.phase {
+		if rec.Role != want.role || rec.Text != want.text || rec.Phase != want.phase {
 			t.Errorf("record %d = role %q text %q phase %q, want role %q text %q phase %q",
-				i, rec.Role, ExtractText(rec.Message.Content), rec.Phase, want.role, want.text, want.phase)
+				i, rec.Role, rec.Text, rec.Phase, want.role, want.text, want.phase)
 		}
 	}
 }
@@ -153,7 +152,7 @@ func TestParseReaderWithOptions_CodexResponseFallbackExcludesKnownHiddenContext(
 		t.Fatalf("got %d records, want 2", len(result.Records))
 	}
 	for _, rec := range result.Records {
-		if strings.Contains(ExtractText(rec.Message.Content), "SECRET") {
+		if strings.Contains(rec.Text, "SECRET") {
 			t.Fatal("injected context was emitted")
 		}
 	}
@@ -256,18 +255,21 @@ func TestParseReaderWithOptions_CodexAssociatesVisibleImageByTurnID(t *testing.T
 		`{"timestamp":"2026-09-17T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"id":"item-id","client_id":"client-id","type":"UserMessage","content":[{"type":"text","text":"with image"},{"type":"local_image","path":"/path/that/must/not/be/read.png"}]}}}`,
 	}, "\n")
 
-	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true, Images: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Records) != 1 {
 		t.Fatalf("got %d records, want 1", len(result.Records))
 	}
+	if result.Records[0].Message != nil {
+		t.Fatalf("Codex record retained provider-specific Message: %#v", result.Records[0].Message)
+	}
 	images := result.Records[0].Images
 	if len(images) != 1 {
 		t.Fatalf("got %d images, want 1", len(images))
 	}
-	if images[0].MediaType != "image/png" || images[0].Data != tinyPNGBase64 {
+	if images[0].MediaType != "image/png" || images[0].Data != "" || len(images[0].Bytes) == 0 {
 		t.Fatalf("normalized image = %#v", images[0])
 	}
 }
@@ -279,7 +281,7 @@ func TestParseReaderWithOptions_CodexKeepsImageOnlyUserMessage(t *testing.T) {
 		`{"timestamp":"2026-09-17T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"local_image","path":"/not/read.png"}]}}}`,
 	}, "\n")
 
-	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true, Images: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +299,7 @@ func TestParseReaderWithOptions_CodexImageQueuePreservesUserMessageOrder(t *test
 		`{"timestamp":"2026-09-17T00:00:04Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"second"},{"type":"local_image","path":"/not/read.png"}]}}}`,
 	}, "\n")
 
-	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true, Images: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,21 +312,21 @@ func TestParseReaderWithOptions_CodexImageQueuePreservesUserMessageOrder(t *test
 }
 
 func TestParseReaderWithOptions_CodexPreservesMultipleImageOrder(t *testing.T) {
-	secondImage := tinyPNGBase64 + "second"
+	const secondImage = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zt9sAAAAASUVORK5CYII="
 	input := strings.Join([]string{
 		`{"timestamp":"2026-09-17T00:00:00Z","type":"session_meta","payload":{"id":"session-id"}}`,
 		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,` + tinyPNGBase64 + `"},{"type":"input_image","image_url":"data:image/png;base64,` + secondImage + `"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.image","user.image"],"turn_id":"turn-1"}}}`,
 		`{"timestamp":"2026-09-17T00:00:02Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"local_image","path":"/not/read-1.png"},{"type":"local_image","path":"/not/read-2.png"}]}}}`,
 	}, "\n")
 
-	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true, Images: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Records) != 1 || len(result.Records[0].Images) != 2 {
 		t.Fatalf("multiple images were not preserved: %#v", result.Records)
 	}
-	if result.Records[0].Images[0].Data != tinyPNGBase64 || result.Records[0].Images[1].Data != secondImage {
+	if string(result.Records[0].Images[0].Bytes) == string(result.Records[0].Images[1].Bytes) {
 		t.Fatalf("image order changed: %#v", result.Records[0].Images)
 	}
 }
@@ -337,7 +339,7 @@ func TestParseReaderWithOptions_CodexSkipsAmbiguousTurnImageAssociation(t *testi
 		`{"timestamp":"2026-09-17T00:00:03Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"with image"},{"type":"local_image","path":"/not/read.png"}]}}}`,
 	}, "\n")
 
-	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex})
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Images: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +361,7 @@ func TestParseReaderWithOptions_CodexDoesNotReadLocalImagePath(t *testing.T) {
 		`{"timestamp":"2026-09-17T00:00:01Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"path only"},{"type":"local_image","path":"` + imagePath + `"}]}}}`,
 	}, "\n")
 
-	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex})
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Images: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +379,7 @@ func TestParseReaderWithOptions_CodexResponseFallbackIncludesExplicitUserImage(t
 		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fallback"},{"type":"input_image","image_url":"data:image/png;base64,` + tinyPNGBase64 + `"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text","user.image"],"turn_id":"turn-1"}}}`,
 	}, "\n")
 
-	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true, Images: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,12 +394,90 @@ func TestParseReaderWithOptions_CodexResponseFallbackKeepsImageOnlyMessage(t *te
 		`{"timestamp":"2026-09-17T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,` + tinyPNGBase64 + `"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.image"],"turn_id":"turn-1"}}}`,
 	}, "\n")
 
-	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true, Images: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Records) != 1 || result.Records[0].Text != "" || len(result.Records[0].Images) != 1 {
 		t.Fatalf("image-only fallback was not normalized: %#v", result.Records)
+	}
+}
+
+func TestParseReaderWithOptions_CodexImageValidationHonorsImagesOption(t *testing.T) {
+	tests := []struct {
+		name     string
+		imageURL string
+	}{
+		{name: "unsupported header", imageURL: "data:image/bmp;base64," + tinyPNGBase64},
+		{name: "invalid base64 body", imageURL: "data:image/png;base64,%%%"},
+		{name: "media type mismatch", imageURL: "data:image/jpeg;base64," + tinyPNGBase64},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := strings.Join([]string{
+				`{"type":"session_meta","payload":{"id":"session-id"}}`,
+				`{"timestamp":"2026-09-17T00:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"keep text"},{"type":"input_image","image_url":"` + tt.imageURL + `"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text","user.image"],"turn_id":"turn-1"}}}`,
+				`{"timestamp":"2026-09-17T00:00:01Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"type":"text","text":"keep text"},{"type":"local_image","path":"/not/read"}]}}}`,
+			}, "\n")
+
+			result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true})
+			if err != nil {
+				t.Fatalf("strict parsing without images failed: %v", err)
+			}
+			if len(result.Records) != 1 || result.Records[0].Text != "keep text" || len(result.Records[0].Images) != 0 {
+				t.Fatalf("result without images = %#v", result.Records)
+			}
+
+			if _, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderCodex, Strict: true, Images: true}); err == nil {
+				t.Fatal("strict parsing with images should reject the invalid image")
+			}
+		})
+	}
+}
+
+func TestParseReaderWithOptions_CodexTypeMismatchLineIsNeverNormalized(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name: "invalid current event beside valid current event",
+			input: strings.Join([]string{
+				`{"type":"session_meta","payload":{"id":"session-id"}}`,
+				`{"timestamp":"2026-09-17T00:00:00Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"AgentMessage","content":[{"type":"Text","text":"valid answer"}]}}}`,
+				`{"timestamp":"2026-09-17T00:00:00Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"must not appear"}]},"turn_id":123}}`,
+			}, "\n"),
+			want: "valid answer",
+		},
+		{
+			name: "invalid current event does not mask legacy family",
+			input: strings.Join([]string{
+				`{"type":"session_meta","payload":{"id":"session-id"}}`,
+				`{"timestamp":"2026-09-17T00:00:00Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"must not appear"}]},"turn_id":123}}`,
+				`{"timestamp":"2026-09-17T00:00:01Z","type":"event_msg","payload":{"type":"agent_message","message":"legacy answer"}}`,
+			}, "\n"),
+			want: "legacy answer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseReaderWithOptions(strings.NewReader(tt.input), ParseOptions{Provider: ProviderCodex})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.want == "" {
+				if len(result.Records) != 0 {
+					t.Fatalf("type-mismatched record was normalized: %#v", result.Records)
+				}
+				return
+			}
+			if len(result.Records) != 1 || result.Records[0].Text != tt.want {
+				t.Fatalf("records = %#v, want one %q record", result.Records, tt.want)
+			}
+		})
 	}
 }
 

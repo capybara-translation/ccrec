@@ -83,6 +83,10 @@ func runConvert() {
 	}
 
 	inputPath := flag.Arg(0)
+	if includeImages && output == "" {
+		fmt.Fprintf(os.Stderr, "warning: -images requires -o to save image files, ignoring\n")
+		includeImages = false
+	}
 
 	provider, err := providerFromFlag(providerName)
 	if err != nil {
@@ -91,7 +95,7 @@ func runConvert() {
 	}
 
 	// Parse JSONL.
-	result, err := parser.ParseFileWithOptions(inputPath, parser.ParseOptions{Provider: provider, Strict: strict})
+	result, err := parser.ParseFileWithOptions(inputPath, parser.ParseOptions{Provider: provider, Strict: strict, Images: includeImages})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -108,8 +112,6 @@ func runConvert() {
 	if len(records) == 0 {
 		if result.InputRecords == 0 {
 			fmt.Fprintf(os.Stderr, "warning: no records found in %s\n", inputPath)
-		} else if len(result.Diagnostics) == 0 {
-			fmt.Fprintf(os.Stderr, "warning: transcript contained records but no supported messages were found (provider=%s)\n", result.Provider)
 		}
 		os.Exit(0)
 	}
@@ -128,9 +130,6 @@ func runConvert() {
 	if includeImages && output != "" {
 		base := strings.TrimSuffix(filepath.Base(output), filepath.Ext(output))
 		attachmentsDir = filepath.Join(filepath.Dir(output), "attachments_"+base)
-	} else if includeImages {
-		fmt.Fprintf(os.Stderr, "warning: -images requires -o to save image files, ignoring\n")
-		includeImages = false
 	}
 
 	opts := formatter.Options{

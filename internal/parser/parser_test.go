@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-func TestParseFile_MissingFile(t *testing.T) {
+func TestParseFileWithOptions_MissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nonexistent.jsonl")
-	_, err := ParseFile(path)
+	_, err := ParseFileWithOptions(path, ParseOptions{Provider: ProviderAuto})
 	if err == nil {
-		t.Fatal("ParseFile should return an error for a missing file")
+		t.Fatal("ParseFileWithOptions should return an error for a missing file")
 	}
 	// Callers (hook.Run) rely on errors.Is to detect a missing transcript;
 	// re-wrapping with %v instead of %w would break that silently.
@@ -23,10 +23,7 @@ func TestParseFile_MissingFile(t *testing.T) {
 
 func TestParseReader_UserMessage(t *testing.T) {
 	input := `{"type":"user","message":{"role":"user","content":"hello"},"timestamp":"2026-01-01T00:00:00Z"}`
-	records, err := parseReader(strings.NewReader(input))
-	if err != nil {
-		t.Fatal(err)
-	}
+	records := parseClaudeRecords(t, input)
 	if len(records) != 1 {
 		t.Fatalf("got %d records, want 1", len(records))
 	}
@@ -40,10 +37,7 @@ func TestParseReader_UserMessage(t *testing.T) {
 
 func TestParseReader_AssistantWithContentBlocks(t *testing.T) {
 	input := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"response"}]},"timestamp":"2026-01-01T00:00:01Z"}`
-	records, err := parseReader(strings.NewReader(input))
-	if err != nil {
-		t.Fatal(err)
-	}
+	records := parseClaudeRecords(t, input)
 	if len(records) != 1 {
 		t.Fatalf("got %d records, want 1", len(records))
 	}
@@ -56,10 +50,7 @@ func TestParseReader_MultipleLines(t *testing.T) {
 	input := `{"type":"user","message":{"role":"user","content":"first"},"timestamp":"2026-01-01T00:00:00Z"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"second"}]},"timestamp":"2026-01-01T00:00:01Z"}
 {"type":"file-history-snapshot","messageId":"abc","timestamp":"2026-01-01T00:00:02Z"}`
-	records, err := parseReader(strings.NewReader(input))
-	if err != nil {
-		t.Fatal(err)
-	}
+	records := parseClaudeRecords(t, input)
 	if len(records) != 3 {
 		t.Fatalf("got %d records, want 3", len(records))
 	}
@@ -69,10 +60,7 @@ func TestParseReader_SkipsEmptyLines(t *testing.T) {
 	input := `{"type":"user","message":{"role":"user","content":"hello"},"timestamp":"2026-01-01T00:00:00Z"}
 
 {"type":"user","message":{"role":"user","content":"world"},"timestamp":"2026-01-01T00:00:01Z"}`
-	records, err := parseReader(strings.NewReader(input))
-	if err != nil {
-		t.Fatal(err)
-	}
+	records := parseClaudeRecords(t, input)
 	if len(records) != 2 {
 		t.Fatalf("got %d records, want 2", len(records))
 	}
@@ -82,10 +70,7 @@ func TestParseReader_SkipsMalformedLines(t *testing.T) {
 	input := `{"type":"user","message":{"role":"user","content":"ok"},"timestamp":"2026-01-01T00:00:00Z"}
 this is not json
 {"type":"user","message":{"role":"user","content":"also ok"},"timestamp":"2026-01-01T00:00:01Z"}`
-	records, err := parseReader(strings.NewReader(input))
-	if err != nil {
-		t.Fatal(err)
-	}
+	records := parseClaudeRecords(t, input)
 	if len(records) != 2 {
 		t.Fatalf("got %d records, want 2 (malformed line skipped)", len(records))
 	}
@@ -95,13 +80,19 @@ func TestParseReader_LargeLine(t *testing.T) {
 	// Simulate a large tool result (> 64KB default scanner buffer).
 	bigContent := strings.Repeat("x", 100_000)
 	input := `{"type":"user","message":{"role":"user","content":"` + bigContent + `"},"timestamp":"2026-01-01T00:00:00Z"}`
-	records, err := parseReader(strings.NewReader(input))
-	if err != nil {
-		t.Fatal(err)
-	}
+	records := parseClaudeRecords(t, input)
 	if len(records) != 1 {
 		t.Fatalf("got %d records, want 1", len(records))
 	}
+}
+
+func parseClaudeRecords(t *testing.T, input string) []*Record {
+	t.Helper()
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderClaude})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result.Records
 }
 
 func TestParseReaderWithOptions_EmptyTranscriptIsNotDetectionError(t *testing.T) {
@@ -160,5 +151,101 @@ func TestParseReaderWithOptions_MalformedOnlyWarnsUnlessStrict(t *testing.T) {
 
 	if _, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderAuto, Strict: true}); err == nil {
 		t.Fatal("strict parsing should reject malformed-only input")
+	}
+}
+
+func TestParseReaderWithOptions_SkipsOversizedLineAndContinues(t *testing.T) {
+	oversized := `{"type":"ignored","value":"` + strings.Repeat("x", maxScannerBuf) + `"}`
+	valid := `{"type":"user","message":{"role":"user","content":"after oversized line"},"timestamp":"2026-01-15T10:00:00Z"}`
+	input := oversized + "\n" + valid + "\n"
+
+	result, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderClaude})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 1 || ExtractText(result.Records[0].Message.Content) != "after oversized line" {
+		t.Fatalf("records after oversized line = %#v", result.Records)
+	}
+	if len(result.Diagnostics) != 1 || !result.Diagnostics[0].Strict || result.Diagnostics[0].Line != 1 {
+		t.Fatalf("oversized line diagnostic = %#v", result.Diagnostics)
+	}
+	if _, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderClaude, Strict: true}); err == nil {
+		t.Fatal("strict parsing should reject an oversized line")
+	}
+}
+
+func TestReadLines_AcceptsRecordAtLimitWithLineEnding(t *testing.T) {
+	prefix := `{"type":"future-record","value":"`
+	suffix := `"}`
+	input := prefix + strings.Repeat("x", maxScannerBuf-len(prefix)-len(suffix)) + suffix + "\n"
+
+	lines, diagnostics, inputRecords, err := readLines(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || len(diagnostics) != 0 || inputRecords != 1 {
+		t.Fatalf("readLines = %d lines, %d diagnostics, %d input records; want 1, 0, 1", len(lines), len(diagnostics), inputRecords)
+	}
+}
+
+func TestParseReaderWithOptions_ClaudeNormalizesImagesOnlyWhenRequested(t *testing.T) {
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+	input := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"with image"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + png + `"}}]},"timestamp":"2026-01-01T00:00:00Z"}`
+
+	withoutImages, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderClaude, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withoutImages.Records) != 1 || len(withoutImages.Records[0].Images) != 0 {
+		t.Fatalf("Claude images normalized without Images option: %#v", withoutImages.Records)
+	}
+
+	withImages, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderClaude, Strict: true, Images: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withImages.Records) != 1 || len(withImages.Records[0].Images) != 1 {
+		t.Fatalf("Claude image was not normalized: %#v", withImages.Records)
+	}
+	image := withImages.Records[0].Images[0]
+	if image.MediaType != "image/png" || len(image.Bytes) == 0 {
+		t.Fatalf("normalized Claude image = %#v", image)
+	}
+}
+
+func TestParseReaderWithOptions_ClaudeRejectsNonBase64ImageSourceWhenRequested(t *testing.T) {
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+	input := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"keep text"},{"type":"image","source":{"type":"url","media_type":"image/png","data":"` + png + `"}}]}}`
+
+	if _, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderClaude, Strict: true}); err != nil {
+		t.Fatalf("strict parsing without images failed: %v", err)
+	}
+	if _, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderClaude, Strict: true, Images: true}); err == nil {
+		t.Fatal("strict parsing with images should reject a non-base64 image source")
+	}
+}
+
+func TestParseReaderWithOptions_ClaudeInvalidImageSourceHonorsImagesOption(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{name: "missing source", source: ""},
+		{name: "null source", source: `,"source":null`},
+		{name: "empty data", source: `,"source":{"type":"base64","media_type":"image/png","data":""}`},
+		{name: "invalid source shape", source: `,"source":"invalid"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"keep text"},{"type":"image"` + tt.source + `}]}}`
+
+			if _, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderClaude, Strict: true}); err != nil {
+				t.Fatalf("strict parsing without images failed: %v", err)
+			}
+			if _, err := parseReaderWithOptions(strings.NewReader(input), ParseOptions{Provider: ProviderClaude, Strict: true, Images: true}); err == nil {
+				t.Fatal("strict parsing with images should reject the invalid image source")
+			}
+		})
 	}
 }
