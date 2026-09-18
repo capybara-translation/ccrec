@@ -208,7 +208,7 @@ Add the following to `~/.codex/hooks.json`, replacing the executable, repository
         "hooks": [
           {
             "type": "command",
-            "command": "/opt/homebrew/bin/ccrec hook -provider codex -base /Users/you/repos -dir /Users/you/Documents/conversations",
+            "command": "/path/to/ccrec hook -provider codex -base /Users/you/repos -dir /Users/you/Documents/conversations",
             "timeout": 3,
             "statusMessage": "Saving conversation log"
           }
@@ -218,6 +218,8 @@ Add the following to `~/.codex/hooks.json`, replacing the executable, repository
   }
 }
 ```
+
+Replace `/path/to/ccrec` with the absolute path to the installed binary. The example repository and output paths must also be replaced with absolute paths for your environment.
 
 New or changed non-managed hooks must be reviewed and trusted before Codex runs them. Open `/hooks` in Codex to review the definition. The hook uses the supplied `session_id`, `transcript_path`, and `cwd`, writes the Markdown atomically, and uses owner-only permissions (`0600` files and `0700` directories). A null, empty, or missing transcript path is treated as a successful no-op.
 
