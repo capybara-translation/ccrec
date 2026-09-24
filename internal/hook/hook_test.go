@@ -167,11 +167,10 @@ func TestExtractSessionID(t *testing.T) {
 	}
 }
 
-func TestResolveSessionID_FilenameFallbackDoesNotCollideOnSharedPrefix(t *testing.T) {
-	first := resolveSessionID("", "", "/tmp/42bb222a-a575-4386-bae8-2b0ce9a93d40.jsonl", parser.ProviderClaude)
-	second := resolveSessionID("", "", "/tmp/42bb222a-1111-2222-3333-444444444444.jsonl", parser.ProviderClaude)
-	if first == second {
-		t.Fatalf("distinct transcript filenames collided at %q", first)
+func TestResolveSessionID_ClaudeUsesLegacyEightCharacterUUIDPrefix(t *testing.T) {
+	got := resolveSessionID("42bb222a-a575-4386-bae8-2b0ce9a93d40", "", "/tmp/ignored.jsonl", parser.ProviderClaude)
+	if got != "42bb222a" {
+		t.Fatalf("resolved session ID = %q, want legacy Claude UUID prefix", got)
 	}
 }
 
@@ -216,10 +215,17 @@ func TestResolveSessionID_CodexHashesFilenameFallback(t *testing.T) {
 	}
 }
 
-func TestResolveSessionID_ClaudeKeepsExistingID(t *testing.T) {
-	got := resolveSessionID("42bb222a-a575-4386-bae8-2b0ce9a93d40", "", "/tmp/ignored.jsonl", parser.ProviderClaude)
-	if got != "42bb222a-a575-4386-bae8-2b0ce9a93d40" {
-		t.Fatalf("resolved session ID = %q, want unchanged Claude ID", got)
+func TestResolveSessionID_ClaudeShortensFilenameFallback(t *testing.T) {
+	got := resolveSessionID("", "", "/tmp/42bb222a-a575-4386-bae8-2b0ce9a93d40.jsonl", parser.ProviderClaude)
+	if got != "42bb222a" {
+		t.Fatalf("resolved session ID = %q, want legacy Claude filename prefix", got)
+	}
+}
+
+func TestResolveSessionID_ClaudeKeepsSafeCustomID(t *testing.T) {
+	got := resolveSessionID("custom-session-id", "", "/tmp/ignored.jsonl", parser.ProviderClaude)
+	if got != "custom-session-id" {
+		t.Fatalf("resolved session ID = %q, want full custom Claude ID", got)
 	}
 }
 
@@ -315,20 +321,9 @@ func TestRunIntegration(t *testing.T) {
 
 			// Verify the output file was created in the expected project directory.
 			expectedDir := filepath.Join(outDir, tt.wantProjectDir)
-			entries, err := os.ReadDir(expectedDir)
-			if err != nil {
-				t.Fatalf("expected directory %s does not exist: %v", expectedDir, err)
-			}
-
-			found := false
-			for _, e := range entries {
-				if strings.HasSuffix(e.Name(), ".md") {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Errorf("no .md file found in %s", expectedDir)
+			expectedPath := filepath.Join(expectedDir, "2026-01-15_aaaaaaaa.md")
+			if _, err := os.Stat(expectedPath); err != nil {
+				t.Errorf("expected Claude hook output %s: %v", expectedPath, err)
 			}
 		})
 	}

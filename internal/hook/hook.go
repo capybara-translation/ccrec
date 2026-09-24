@@ -249,6 +249,11 @@ func resolveSessionID(hookID, metadataID, transcriptPath string, provider parser
 			if provider == parser.ProviderCodex {
 				return shortSessionHash(candidate)
 			}
+			// Preserve legacy Claude filenames for standard UUIDs while keeping
+			// custom or malformed IDs safely sanitized in full.
+			if provider == parser.ProviderClaude && uuidPattern.FindString(candidate) == candidate {
+				return candidate[:8]
+			}
 			return sanitized
 		}
 	}

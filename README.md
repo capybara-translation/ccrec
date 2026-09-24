@@ -128,10 +128,11 @@ entities (nodes) and relationships (edges)...
 
 When `-o` is used, ccrec writes complete same-directory temporary files and atomically replaces the Markdown and image destinations with mode `0600`; directories it creates use `0700`, while existing directory modes are unchanged. A destination symlink is replaced rather than followed, and an attachments-directory symlink is rejected. An image save failure aborts the Markdown replacement. Concurrent writers publish one complete result, but the last rename wins. A process killed before cleanup may leave a `.tmp-*` file, and containing directories are not fsynced.
 
-## Breaking changes in Codex support
+## Behavior and compatibility changes
 
 - Conversation order now follows JSONL source order for both providers. Sessions whose timestamps move backwards can differ from older ccrec output; equal timestamps previously did not guarantee source order.
 - Codex hook output names use an eight-character hash of the complete session ID instead of the raw first eight characters. This removes the systematic UUIDv7 timestamp-prefix collision while keeping filenames compact; as with any 32-bit name, accidental hash collisions remain possible.
+- Claude Code hook output keeps the legacy first eight characters of its UUID. Full-UUID files created by ccrec v0.12.0 remain untouched and may need to be renamed or removed manually.
 - With `-all`, records that have neither renderable text nor requested images are no longer counted or emitted as empty message headings.
 - Claude Code image-only user messages are now emitted when `-images` is enabled.
 
@@ -196,7 +197,7 @@ Replace the placeholders: `/path/to/ccrec` with the actual binary path, `<your-r
 - With `-base`, project name is the relative path from base to the project directory (e.g., `my-app/backend`)
 - Without `-base`, project name is the project directory basename (e.g., `backend`)
 - Date is derived from the first message timestamp (stable across midnight)
-- Session ID comes from the hook ID, transcript metadata ID, or filename (in that order). Claude Code keeps the sanitized ID; Codex uses an eight-character hash of the complete ID
+- Session ID comes from the hook ID, transcript metadata ID, or filename (in that order). Claude Code UUIDs use their legacy first eight characters; Codex uses an eight-character hash of the complete ID
 - Overwrites the same file on every invocation within a session
 - Skips subagent transcripts (only saves the main conversation)
 - Skips execution when `stop_hook_active` is true (prevents infinite loops)
