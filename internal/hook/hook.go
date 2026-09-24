@@ -151,6 +151,9 @@ func Run(args []string) {
 	}
 	sessionID := resolveSessionID(input.SessionID, result.SessionID, input.TranscriptPath, result.Provider)
 	baseName := sessionDate + "_" + sessionID
+	if result.Provider == parser.ProviderCodex {
+		baseName += "_codex"
+	}
 	fileName := baseName + ".md"
 
 	outProjectDir := filepath.Join(outDir, projectName)

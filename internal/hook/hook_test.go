@@ -534,7 +534,7 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHashedHookSessionID(t 
 		if err != nil {
 			t.Fatalf("Codex hook failed: %v\n%s", err, out)
 		}
-		path := filepath.Join(outDir, "codex-project", "2026-09-17_32c723f6.md")
+		path := filepath.Join(outDir, "codex-project", "2026-09-17_32c723f6_codex.md")
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read output: %v", err)
@@ -557,7 +557,7 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHashedHookSessionID(t 
 	if !strings.Contains(string(second), "fixture prompt") || !strings.Contains(string(second), "fixture answer") {
 		t.Fatalf("Codex messages missing from output:\n%s", second)
 	}
-	attachment := filepath.Join(outDir, "codex-project", "attachments_2026-09-17_32c723f6", "image_001.png")
+	attachment := filepath.Join(outDir, "codex-project", "attachments_2026-09-17_32c723f6_codex", "image_001.png")
 	if _, err := os.Stat(attachment); err != nil {
 		t.Fatalf("Codex image missing: %v", err)
 	}
@@ -572,7 +572,7 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHashedHookSessionID(t 
 		if err := os.Mkdir(realDir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		attachmentsDir := filepath.Join(projectDir, "attachments_2026-09-17_32c723f6")
+		attachmentsDir := filepath.Join(projectDir, "attachments_2026-09-17_32c723f6_codex")
 		if err := os.Symlink(realDir, attachmentsDir); err != nil {
 			t.Fatal(err)
 		}
@@ -582,7 +582,7 @@ func TestRunIntegration_CodexSessionEndIsIdempotentAndUsesHashedHookSessionID(t 
 		if output, err := cmd.CombinedOutput(); err == nil {
 			t.Fatalf("hook succeeded with a symlinked attachments directory:\n%s", output)
 		}
-		markdownPath := filepath.Join(projectDir, "2026-09-17_32c723f6.md")
+		markdownPath := filepath.Join(projectDir, "2026-09-17_32c723f6_codex.md")
 		if _, err := os.Stat(markdownPath); !os.IsNotExist(err) {
 			t.Fatalf("hook published Markdown despite image save failure: %v", err)
 		}
