@@ -12,6 +12,7 @@ import (
 	"github.com/capybara-translation/ccrec/internal/formatter"
 	"github.com/capybara-translation/ccrec/internal/hook"
 	"github.com/capybara-translation/ccrec/internal/parser"
+	"github.com/capybara-translation/ccrec/internal/redact"
 	"github.com/capybara-translation/ccrec/internal/safefile"
 )
 
@@ -49,6 +50,7 @@ func runConvert() {
 		includeImages  bool
 		providerName   string
 		strict         bool
+		redactSecrets  bool
 	)
 
 	flag.StringVar(&output, "o", "", "Output file path (default: stdout)")
@@ -57,6 +59,7 @@ func runConvert() {
 	flag.BoolVar(&includeImages, "images", false, "Extract and embed images (requires -o)")
 	flag.StringVar(&providerName, "provider", "auto", "Transcript provider: auto, claude, or codex")
 	flag.BoolVar(&strict, "strict", false, "Fail when supported messages cannot be extracted safely")
+	flag.BoolVar(&redactSecrets, "redact", false, "Redact secrets (API keys, tokens, passwords) detected by Betterleaks rules")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: ccrec [options] <transcript.jsonl>\n")
 		fmt.Fprintf(os.Stderr, "       ccrec hook [options]\n\n")
@@ -71,6 +74,7 @@ func runConvert() {
 		fmt.Fprintf(os.Stderr, "  ccrec -tools session.jsonl                   # Include tool summaries\n")
 		fmt.Fprintf(os.Stderr, "  ccrec -all session.jsonl                     # Include all messages\n")
 		fmt.Fprintf(os.Stderr, "  ccrec -images -o out.md session.jsonl        # Extract images\n")
+		fmt.Fprintf(os.Stderr, "  ccrec -redact -o out.md session.jsonl        # Redact secrets\n")
 		fmt.Fprintf(os.Stderr, "\n  ccrec hook -dir ~/obsidian/projects          # Run as Claude Code hook\n")
 		fmt.Fprintf(os.Stderr, "  ccrec hook -images -dir ~/obsidian/projects  # With image extraction\n")
 	}
@@ -141,9 +145,9 @@ func runConvert() {
 	}
 
 	if output == "" {
-		err = formatter.FormatMarkdown(os.Stdout, records, opts)
+		err = markdownRenderer(records, opts, redactSecrets)(os.Stdout)
 	} else {
-		err = writeMarkdownFile(output, records, opts)
+		err = writeMarkdownFile(output, records, opts, redactSecrets)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: format markdown: %v\n", err)
@@ -159,10 +163,18 @@ func providerFromFlag(value string) (parser.Provider, error) {
 	return parser.ParseProvider(value)
 }
 
-func writeMarkdownFile(path string, records []*parser.Record, opts formatter.Options) error {
-	return safefile.Write(path, 0o600, func(w io.Writer) error {
+func markdownRenderer(records []*parser.Record, opts formatter.Options, redactSecrets bool) func(io.Writer) error {
+	render := func(w io.Writer) error {
 		return formatter.FormatMarkdown(w, records, opts)
-	})
+	}
+	if redactSecrets {
+		return redact.Wrap(render)
+	}
+	return render
+}
+
+func writeMarkdownFile(path string, records []*parser.Record, opts formatter.Options, redactSecrets bool) error {
+	return safefile.Write(path, 0o600, markdownRenderer(records, opts, redactSecrets))
 }
 
 func absOrOriginal(path string) string {

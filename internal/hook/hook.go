@@ -14,6 +14,7 @@ import (
 
 	"github.com/capybara-translation/ccrec/internal/formatter"
 	"github.com/capybara-translation/ccrec/internal/parser"
+	"github.com/capybara-translation/ccrec/internal/redact"
 	"github.com/capybara-translation/ccrec/internal/safefile"
 )
 
@@ -41,6 +42,7 @@ func Run(args []string) {
 	providerName := fs.String("provider", "auto", "Transcript provider: auto, claude, or codex")
 	strict := fs.Bool("strict", false, "Fail when supported messages cannot be extracted safely")
 	project := fs.String("project", "", "Explicit project name or relative project path")
+	redactSecrets := fs.Bool("redact", false, "Redact secrets (API keys, tokens, passwords) detected by Betterleaks rules")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: ccrec hook [-base <base-path>] -dir <output-directory>\n\n")
 		fmt.Fprintf(os.Stderr, "Run as a Claude Code or Codex hook. Reads hook JSON from stdin,\n")
@@ -170,9 +172,15 @@ func Run(args []string) {
 		IncludeImages:  *images,
 		AttachmentsDir: filepath.Join(outProjectDir, "attachments_"+baseName),
 	}
-	if err := safefile.Write(outPath, 0o600, func(w io.Writer) error {
+	render := func(w io.Writer) error {
 		return formatter.FormatMarkdown(w, records, opts)
-	}); err != nil {
+	}
+	if *redactSecrets {
+		// Redact in memory so that unredacted Markdown never reaches disk,
+		// not even in the temporary file.
+		render = redact.Wrap(render)
+	}
+	if err := safefile.Write(outPath, 0o600, render); err != nil {
 		fmt.Fprintf(os.Stderr, "ccrec hook: format error: %v\n", err)
 		os.Exit(1)
 	}

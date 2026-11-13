@@ -45,7 +45,7 @@ func TestWriteMarkdownFile_UsesPrivateAtomicOutput(t *testing.T) {
 			},
 		},
 	}
-	if err := writeMarkdownFile(path, records, formatter.Options{}); err != nil {
+	if err := writeMarkdownFile(path, records, formatter.Options{}, false); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
@@ -154,4 +154,37 @@ func TestCLIHelperProcess(t *testing.T) {
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	main()
 	os.Exit(0)
+}
+
+func TestWriteMarkdownFile_RedactsSecrets(t *testing.T) {
+	// Assembled at runtime so the repository holds no literal credential.
+	token := "ghp_" + strings.Repeat("aB3dE5fG7h", 3) + "J9kLmN"
+	content, err := json.Marshal("my token is " + token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := []*parser.Record{{
+		Type:    "user",
+		Message: &parser.Message{Role: "user", Content: content},
+	}}
+
+	for _, tt := range []struct {
+		redact    bool
+		wantToken bool
+	}{{redact: false, wantToken: true}, {redact: true, wantToken: false}} {
+		path := filepath.Join(t.TempDir(), "conversation.md")
+		if err := writeMarkdownFile(path, records, formatter.Options{}, tt.redact); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(string(data), token); got != tt.wantToken {
+			t.Errorf("redact=%v: token present = %v, want %v", tt.redact, got, tt.wantToken)
+		}
+		if tt.redact && !strings.Contains(string(data), "my token is [REDACTED:github-pat]") {
+			t.Errorf("redact=true: marker missing:\n%s", data)
+		}
+	}
 }

@@ -329,6 +329,47 @@ func TestRunIntegration(t *testing.T) {
 	}
 }
 
+func TestRunIntegration_RedactsSecrets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	binPath := filepath.Join(t.TempDir(), "ccrec")
+	build := exec.Command("go", "build", "-o", binPath, "../../cmd/ccrec")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	// Assembled at runtime so the repository holds no literal credential.
+	token := "ghp_" + strings.Repeat("aB3dE5fG7h", 3) + "J9kLmN"
+	transcriptPath := filepath.Join(t.TempDir(), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
+	transcript := `{"type":"user","message":{"role":"user","content":"GITHUB_TOKEN=` + token + `"},"timestamp":"2026-01-15T10:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"noted"}]},"timestamp":"2026-01-15T10:00:01Z"}
+`
+	if err := os.WriteFile(transcriptPath, []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := t.TempDir()
+	stdinBytes, _ := json.Marshal(HookInput{TranscriptPath: transcriptPath, CWD: "/tmp/redact-app"})
+	cmd := exec.Command(binPath, "hook", "-redact", "-dir", outDir)
+	cmd.Stdin = strings.NewReader(string(stdinBytes))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("hook failed: %v\n%s", err, out)
+	}
+
+	data, err := os.ReadFile(filepath.Join(outDir, "redact-app", "2026-01-15_aaaaaaaa.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), token) {
+		t.Fatalf("token leaked into hook output:\n%s", data)
+	}
+	if !strings.Contains(string(data), "GITHUB_TOKEN=[REDACTED:github-pat]") {
+		t.Fatalf("redaction marker missing:\n%s", data)
+	}
+}
+
 func TestRunIntegration_SkipsEmptyOutput(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

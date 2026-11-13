@@ -9,6 +9,7 @@ A CLI tool that converts Claude Code and Codex conversation transcripts (JSONL) 
 - **HTML-safe output** — Escapes HTML tags outside fenced code blocks, preventing Markdown renderers from misinterpreting raw HTML in conversation content.
 - **Tool use summaries** — Optionally includes concise summaries of tool calls (file paths, commands, grep patterns).
 - **Image extraction** — Optionally decodes and saves base64-encoded images from transcripts.
+- **Secret redaction** — Optionally masks API keys, tokens, private keys, and passwords with [Betterleaks](https://github.com/betterleaks/betterleaks) rules before anything is written.
 - **Claude Code hook integration** — Runs as a Stop/SessionEnd hook to automatically save conversations to a directory (e.g., an Obsidian vault).
 - **Codex hook integration** — Runs as a Stop/SessionEnd hook without exporting injected instructions or reasoning.
 
@@ -31,7 +32,7 @@ brew trust --formula capybara-translation/tap/ccrec
 
 ### go install
 
-Requires Go 1.25+.
+Requires Go 1.26+.
 
 ```bash
 go install github.com/capybara-translation/ccrec/cmd/ccrec@latest
@@ -65,6 +66,9 @@ ccrec -all session.jsonl
 
 # Extract and embed images (requires -o)
 ccrec -images -o output.md session.jsonl
+
+# Redact secrets such as API keys, tokens, and passwords
+ccrec -redact -o output.md session.jsonl
 ```
 
 ### Where are the transcript files?
@@ -125,8 +129,18 @@ entities (nodes) and relationships (edges)...
 | `-images`   | Extract and embed images (requires `-o`)  |
 | `-provider <name>` | Input provider: `auto`, `claude`, or `codex` |
 | `-strict` | Fail if messages or requested images cannot be extracted safely, or if an over-limit record is skipped |
+| `-redact` | Replace detected secrets with `[REDACTED:<rule-id>]` (see [Secret redaction](#secret-redaction)) |
 
 When `-o` is used, ccrec writes complete same-directory temporary files and atomically replaces the Markdown and image destinations with mode `0600`; directories it creates use `0700`, while existing directory modes are unchanged. A destination symlink is replaced rather than followed, and an attachments-directory symlink is rejected. An image save failure aborts the Markdown replacement. Concurrent writers publish one complete result, but the last rename wins. A process killed before cleanup may leave a `.tmp-*` file, and containing directories are not fsynced.
+
+## Secret redaction
+
+`-redact` scans the rendered Markdown with the default [Betterleaks](https://github.com/betterleaks/betterleaks) rules and replaces each detected secret with `[REDACTED:<rule-id>]`, for example `GITHUB_TOKEN=[REDACTED:github-pat]`. Scanning runs in process and makes no network requests. Redaction happens in memory, so unredacted Markdown never reaches the output file or its temporary file; if scanning fails, nothing is written.
+
+- For `key = value` matches such as `password: ...`, only the value is replaced. Values of 12 bytes or more are also replaced wherever else they appear; shorter values are replaced only where detected, to avoid masking ordinary words.
+- Encoded secrets (for example base64) are detected and their whole encoded text is replaced.
+- `gitleaks:allow` and `betterleaks:allow` markers are ignored, so text in a conversation cannot opt a secret out of redaction.
+- Detection is rule-based. Secrets without a recognizable format or keyword can be missed, and some non-secrets (for example high-entropy identifiers) can be masked. Saved images and the source JSONL are not redacted.
 
 ## Behavior and compatibility changes
 
@@ -155,7 +169,7 @@ The `hook` subcommand:
 
 The project directory is determined from the `CLAUDE_PROJECT_DIR` environment variable (set automatically by Claude Code), falling back to cwd. With `-base`, the project name is the relative path from the base to the project directory. For example, if the project directory is `~/repos/my-app/backend` and base is `~/repos`, the project name becomes `my-app/backend`. Without `-base`, only the directory basename is used (e.g., `backend`).
 
-`-project` supplies an explicit safe relative project path and takes precedence over automatic project-name derivation. The hook also accepts `-provider`, `-strict`, `-tools`, `-all`, and `-images`; `-tools` is Claude Code-specific and has no effect on Codex transcripts.
+`-project` supplies an explicit safe relative project path and takes precedence over automatic project-name derivation. The hook also accepts `-provider`, `-strict`, `-tools`, `-all`, `-images`, and `-redact`; `-tools` is Claude Code-specific and has no effect on Codex transcripts.
 
 ### Setup
 

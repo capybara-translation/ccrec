@@ -30,3 +30,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Bundled dependencies
+
+The `ccrec` binary includes the following Go modules, used by `-redact`. Each module's full license text is in its source repository.
+
+| Module | License | Copyright |
+|--------|---------|-----------|
+| [github.com/betterleaks/betterleaks/v2](https://github.com/betterleaks/betterleaks) | MIT | Copyright (c) 2026 Zachary Rice |
+| [github.com/dlclark/regexp2](https://github.com/dlclark/regexp2) | MIT | Copyright (c) Doug Clark |
+| [github.com/expr-lang/expr](https://github.com/expr-lang/expr) | MIT | Copyright (c) 2018 Anton Medvedev |
+| [github.com/hashicorp/go-version](https://github.com/hashicorp/go-version) | MPL-2.0 | Copyright (c) 2014 HashiCorp, Inc. |
+| [github.com/mattn/go-isatty](https://github.com/mattn/go-isatty) | MIT | Copyright (c) Yasuhiro MATSUMOTO |
+| [github.com/pelletier/go-toml/v2](https://github.com/pelletier/go-toml) | MIT | Copyright (c) 2021 - 2023 Thomas Pelletier |
+| [github.com/rrethy/ahocorasick](https://github.com/rrethy/ahocorasick) | MIT | Copyright 2019 Adam P. Regasz-Rethy |
+| [golang.org/x/sync](https://cs.opensource.google/go/x/sync) | BSD-3-Clause | Copyright 2009 The Go Authors |
+| [golang.org/x/sys](https://cs.opensource.google/go/x/sys) | BSD-3-Clause | Copyright 2009 The Go Authors |
