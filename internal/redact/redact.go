@@ -49,18 +49,27 @@ func New() (*Redactor, error) {
 }
 
 // Redact returns text with each detected credential replaced by
-// "[REDACTED:<rule-id>]". It fails rather than returning partially scanned
+// "[REDACTED:<rule-id>]". It fails rather than returning partially redacted
 // text.
 func (r *Redactor) Redact(ctx context.Context, text string) (string, error) {
 	var findings []report.Finding
-	source := &sources.Reader{Content: strings.NewReader(text)}
-	if _, err := r.scanner.Scan(ctx, source, func(f report.Finding) error {
+	if _, err := r.scanner.Scan(ctx, wholeText(text), func(f report.Finding) error {
 		findings = append(findings, f)
 		return nil
 	}); err != nil {
 		return "", fmt.Errorf("scan for secrets: %w", err)
 	}
-	return applyFindings(text, findings), nil
+	return applyFindings(text, findings)
+}
+
+// wholeText yields the entire text as a single fragment. sources.Reader cuts
+// input without a blank line into about 125 KB chunks and silently misses a
+// secret that straddles a cut. Scanning one fragment costs parallelism, which
+// is acceptable for transcript-sized Markdown.
+type wholeText string
+
+func (t wholeText) Fragments(_ context.Context, yield sources.FragmentsFunc) error {
+	return yield(sources.Fragment{Raw: string(t)}, nil)
 }
 
 // Wrap returns a render function that buffers the output of render, redacts
@@ -91,25 +100,61 @@ type span struct {
 	rule       string
 }
 
-func applyFindings(text string, findings []report.Finding) string {
+// target is one value to mask: a primary finding or a component of a
+// composite rule.
+type target struct {
+	rule        string
+	value       string
+	location    report.Location
+	decodeDepth int
+	// maskRepeats also masks unlabelled repeats of a long value. Components
+	// are excluded because many are non-secret (usernames, hosts, tenant IDs).
+	maskRepeats bool
+}
+
+func applyFindings(text string, findings []report.Finding) (string, error) {
 	if len(findings) == 0 {
-		return text
+		return text, nil
 	}
 	lineStarts := lineStartOffsets(text)
 	var spans []span
-	for _, f := range findings {
-		spans = append(spans, findingSpans(text, lineStarts, f)...)
+	var unlocated []string
+	for _, t := range targets(findings) {
+		found := targetSpans(text, lineStarts, t)
+		if len(found) == 0 {
+			unlocated = append(unlocated, t.rule)
+		}
+		spans = append(spans, found...)
 	}
-	return replaceSpans(text, spans)
+	if len(unlocated) > 0 {
+		// Never include values here: the message may reach logs or stderr.
+		return "", fmt.Errorf("could not locate %d detected secret(s) for redaction (rules: %s)", len(unlocated), strings.Join(unlocated, ", "))
+	}
+	return replaceSpans(text, spans), nil
 }
 
-func findingSpans(text string, lineStarts []int, f report.Finding) []span {
-	value := f.Match.Value
-	start, end, ok := locate(text, lineStarts, f.Location)
-	if ok && f.DecodeDepth > 0 {
+// targets flattens findings and the components of composite rules. Component
+// rules are not reported on their own, so a component such as
+// aws-secret-access-key appears only inside its parent's ComponentSets.
+func targets(findings []report.Finding) []target {
+	var out []target
+	for _, f := range findings {
+		out = append(out, target{f.RuleID, f.Match.Value, f.Location, f.DecodeDepth, true})
+		for _, set := range f.ComponentSets {
+			for _, c := range set.Components {
+				out = append(out, target{c.RuleID, c.Match.Value, c.Location, c.DecodeDepth, false})
+			}
+		}
+	}
+	return out
+}
+
+func targetSpans(text string, lineStarts []int, t target) []span {
+	start, end, ok := locate(text, lineStarts, t.location)
+	if ok && t.decodeDepth > 0 {
 		// The location covers the encoded text; the decoded value does not
 		// appear literally, so mask the whole encoded span.
-		return []span{{start, end, f.RuleID}}
+		return []span{{start, end, t.rule}}
 	}
 
 	var spans []span
@@ -117,18 +162,18 @@ func findingSpans(text string, lineStarts []int, f report.Finding) []span {
 		matched := text[start:end]
 		// The value usually ends a "key = value" match, so search from the
 		// end to avoid hitting the same characters inside the key.
-		if i := strings.LastIndex(matched, value); value != "" && i >= 0 {
-			spans = append(spans, span{start + i, start + i + len(value), f.RuleID})
-		} else if value == "" {
-			spans = append(spans, span{start, end, f.RuleID})
+		if i := strings.LastIndex(matched, t.value); t.value != "" && i >= 0 {
+			spans = append(spans, span{start + i, start + i + len(t.value), t.rule})
+		} else if t.value == "" {
+			spans = append(spans, span{start, end, t.rule})
 		} else {
 			ok = false
 		}
 	}
 	// Without a trustworthy location, fall back to masking every literal
 	// occurrence so that a location mismatch never leaks the value.
-	if (!ok || len(value) >= minRepeatLength) && value != "" {
-		spans = append(spans, occurrences(text, value, f.RuleID)...)
+	if (!ok || t.maskRepeats && len(t.value) >= minRepeatLength) && t.value != "" {
+		spans = append(spans, occurrences(text, t.value, t.rule)...)
 	}
 	return spans
 }

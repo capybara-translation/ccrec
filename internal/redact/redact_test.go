@@ -21,6 +21,10 @@ func fakeAWSAccessKey() string {
 	return "AKIA" + "Q3W7ERT2YU5IOPZX"
 }
 
+func fakeAWSSecretKey() string {
+	return "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCYzQ8x2B4kLp"
+}
+
 func fakePrivateKey() string {
 	return "-----BEGIN RSA " + "PRIVATE KEY-----\n" +
 		strings.Repeat("MIIEpAIBAAKCAQEA1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZaBcDeFgHiJkLm\n", 5) +
@@ -144,8 +148,10 @@ func TestApplyFindings_FallsBackToValueWhenLocationDoesNotMatch(t *testing.T) {
 		Location: report.Location{StartLine: 9, EndLine: 9, StartColumn: 1, EndColumn: 3},
 	}}
 
-	got := applyFindings(text, findings)
-
+	got, err := applyFindings(text, findings)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got != "a [REDACTED:test-rule]\nb [REDACTED:test-rule]\n" {
 		t.Fatalf("got %q", got)
 	}
@@ -159,8 +165,92 @@ func TestApplyFindings_FallsBackToValueEvenWhenShort(t *testing.T) {
 		Location: report.Location{StartLine: 1, EndLine: 1, StartColumn: 50, EndColumn: 60},
 	}}
 
-	if got := applyFindings(text, findings); got != "x [REDACTED:test-rule] y\n" {
+	got, err := applyFindings(text, findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "x [REDACTED:test-rule] y\n" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRedact_ReplacesComponentSecretOfCompositeRule(t *testing.T) {
+	// The secret key is reported only as a component of aws-access-token.
+	keyID, secret := fakeAWSAccessKey(), fakeAWSSecretKey()
+	got := redactString(t, "aws_access_key_id = "+keyID+"\naws_secret_access_key = "+secret+"\n")
+
+	if strings.Contains(got, keyID) || strings.Contains(got, secret) {
+		t.Fatalf("credential pair leaked: %q", got)
+	}
+}
+
+func TestRedact_DetectsSecretAcrossLargeInputWithoutBlankLines(t *testing.T) {
+	// sources.Reader would force a chunk cut near 125 KB when no blank line
+	// is found, dropping a match that straddles the cut.
+	token := fakeGitHubPAT()
+	// The token starts at byte 124986 and spans the 125000-byte cut.
+	prefix := strings.Repeat("x\n", 124986/2)
+	got := redactString(t, prefix+token+"\n"+strings.Repeat("y\n", 10000))
+
+	if strings.Contains(got, token) {
+		t.Fatal("token straddling a chunk boundary leaked")
+	}
+}
+
+func TestApplyFindings_RedactsComponentOnlyAtItsLocation(t *testing.T) {
+	// Components are often non-secret (usernames, hosts); masking every
+	// repeat would erase unrelated text.
+	host := "db.internal.example.com"
+	text := "host=" + host + " key=SECRETVALUE\nsee " + host + " docs\n"
+	findings := []report.Finding{{
+		RuleID:   "parent-rule",
+		Match:    report.Match{Value: "SECRETVALUE", Full: "key=SECRETVALUE"},
+		Location: report.Location{StartLine: 1, EndLine: 1, StartColumn: 30, EndColumn: 44},
+		ComponentSets: []report.ComponentSet{{Components: []report.ComponentFinding{{
+			RuleID:   "host-component",
+			Match:    report.Match{Value: host, Full: "host=" + host},
+			Location: report.Location{StartLine: 1, EndLine: 1, StartColumn: 1, EndColumn: 28},
+		}}}},
+	}}
+
+	got, err := applyFindings(text, findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "host=[REDACTED:host-component] key=[REDACTED:parent-rule]\nsee " + host + " docs\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestApplyFindings_FailsWhenDetectedSecretCannotBeLocated(t *testing.T) {
+	secret := "decoded-secret-not-in-text"
+	for name, f := range map[string]report.Finding{
+		"decoded with bad location": {
+			RuleID:      "test-rule",
+			DecodeDepth: 1,
+			Match:       report.Match{Value: secret},
+			Location:    report.Location{StartLine: 9, EndLine: 9, StartColumn: 1, EndColumn: 3},
+		},
+		"component value absent": {
+			RuleID:   "parent-rule",
+			Match:    report.Match{Value: "visible"},
+			Location: report.Location{StartLine: 1, EndLine: 1, StartColumn: 1, EndColumn: 7},
+			ComponentSets: []report.ComponentSet{{Components: []report.ComponentFinding{{
+				RuleID: "test-component",
+				Match:  report.Match{Value: secret},
+			}}}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := applyFindings("visible text\n", []report.Finding{f})
+			if err == nil {
+				t.Fatal("expected an error for an unlocatable finding")
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("error message leaks the secret: %v", err)
+			}
+		})
 	}
 }
 

@@ -135,9 +135,10 @@ When `-o` is used, ccrec writes complete same-directory temporary files and atom
 
 ## Secret redaction
 
-`-redact` scans the rendered Markdown with the default [Betterleaks](https://github.com/betterleaks/betterleaks) rules and replaces each detected secret with `[REDACTED:<rule-id>]`, for example `GITHUB_TOKEN=[REDACTED:github-pat]`. Scanning runs in process and makes no network requests. Redaction happens in memory, so unredacted Markdown never reaches the output file or its temporary file; if scanning fails, nothing is written.
+`-redact` scans the rendered Markdown with the default [Betterleaks](https://github.com/betterleaks/betterleaks) rules and replaces each detected secret with `[REDACTED:<rule-id>]`, for example `GITHUB_TOKEN=[REDACTED:github-pat]`. Scanning runs in process and makes no network requests. Redaction happens in memory, so unredacted Markdown never reaches the output file or its temporary file. If scanning fails or a detected secret cannot be located in the text, nothing is written.
 
 - For `key = value` matches such as `password: ...`, only the value is replaced. Values of 12 bytes or more are also replaced wherever else they appear; shorter values are replaced only where detected, to avoid masking ordinary words.
+- Every part of a multi-part credential is replaced where detected, for example the secret key next to an AWS access key ID, or the username next to a password.
 - Encoded secrets (for example base64) are detected and their whole encoded text is replaced.
 - `gitleaks:allow` and `betterleaks:allow` markers are ignored, so text in a conversation cannot opt a secret out of redaction.
 - Detection is rule-based. Secrets without a recognizable format or keyword can be missed, and some non-secrets (for example high-entropy identifiers) can be masked. Saved images and the source JSONL are not redacted.
