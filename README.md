@@ -184,7 +184,7 @@ Add the following to your Claude Code settings (`~/.claude/settings.json`):
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/ccrec hook -images -base <your-repos-root> -dir <output-directory>"
+            "command": "/path/to/ccrec hook -redact -images -base <your-repos-root> -dir <output-directory>"
           }
         ]
       }
@@ -194,7 +194,7 @@ Add the following to your Claude Code settings (`~/.claude/settings.json`):
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/ccrec hook -images -base <your-repos-root> -dir <output-directory>"
+            "command": "/path/to/ccrec hook -redact -images -base <your-repos-root> -dir <output-directory>"
           }
         ]
       }
@@ -203,7 +203,7 @@ Add the following to your Claude Code settings (`~/.claude/settings.json`):
 }
 ```
 
-Replace the placeholders: `/path/to/ccrec` with the actual binary path, `<your-repos-root>` with your repositories root (e.g., `~/repos`), and `<output-directory>` with where you want the Markdown files saved (e.g., `~/Documents/obsidian/vault/projects`).
+Replace the placeholders: `/path/to/ccrec` with the actual binary path, `<your-repos-root>` with your repositories root (e.g., `~/repos`), and `<output-directory>` with where you want the Markdown files saved (e.g., `~/Documents/obsidian/vault/projects`). `-redact` masks secrets before each file is written (see [Secret redaction](#secret-redaction)); remove it to save transcripts unredacted.
 
 ### Behavior
 
@@ -232,7 +232,7 @@ Add the following to `~/.codex/hooks.json`, replacing the executable, repository
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/ccrec hook -provider codex -images -base /Users/you/repos -dir /Users/you/Documents/conversations",
+            "command": "/path/to/ccrec hook -provider codex -redact -images -base /Users/you/repos -dir /Users/you/Documents/conversations",
             "timeout": 30,
             "statusMessage": "Saving conversation log"
           }
@@ -244,7 +244,7 @@ Add the following to `~/.codex/hooks.json`, replacing the executable, repository
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/ccrec hook -provider codex -images -base /Users/you/repos -dir /Users/you/Documents/conversations",
+            "command": "/path/to/ccrec hook -provider codex -redact -images -base /Users/you/repos -dir /Users/you/Documents/conversations",
             "timeout": 3,
             "statusMessage": "Saving conversation log"
           }
@@ -255,7 +255,7 @@ Add the following to `~/.codex/hooks.json`, replacing the executable, repository
 }
 ```
 
-Replace `/path/to/ccrec` with the absolute path to the installed binary. The example repository and output paths must also be replaced with absolute paths for your environment. You may configure either event instead of both. Codex limits `SessionEnd` command hooks to three seconds, so verify that image extraction completes within that limit for your transcript sizes; remove `-images` from that event if necessary.
+Replace `/path/to/ccrec` with the absolute path to the installed binary. The example repository and output paths must also be replaced with absolute paths for your environment. You may configure either event instead of both. Codex limits `SessionEnd` command hooks to three seconds, so verify that image extraction and redaction complete within that limit for your transcript sizes; remove `-images` or `-redact` from that event if necessary. When `Stop` is also configured, a timed-out `SessionEnd` leaves the file saved after the last response intact.
 
 New or changed non-managed hooks must be reviewed and trusted before Codex runs them. Open `/hooks` in Codex to review the definition. The hook uses the supplied `session_id`, `transcript_path`, and `cwd`, writes the Markdown atomically, creates files with mode `0600` and new directories with mode `0700`, and leaves existing directory modes unchanged. A null, empty, or missing transcript path is treated as a successful no-op.
 
